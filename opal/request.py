@@ -102,9 +102,8 @@ class LLMRequestStats:
         return self._7_decode_done_time - self._2b_worker_time
 
     def get_gpu_time(self):
-        # start end difference is the GPU time (it includes the scheduling overheads)
-        # TODO: may be we can do better
-        return self.__scheduler_timestamps[0] - self.__scheduler_timestamps[-1]
+        # Span from first to last scheduler timestamp: covers all prefill + decode steps.
+        return self.__scheduler_timestamps[-1] - self.__scheduler_timestamps[0]
 
 
 class LLMRequest:
