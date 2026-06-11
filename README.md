@@ -219,6 +219,29 @@ OPAL_LOG_LEVEL=DEBUG PYTHONPATH=`pwd`:$PYTHONPATH ./opal/main.py
 ## Configuration 
 We have a single JSON file with all the parameters for the simulation. For documentation of this configuration file, please see the wiki: https://github.com/IBM/opal-sim/wiki
 
+### Config Builder UI
+
+To help generate valid configuration files interactively, OPAL ships a small local web UI:
+
+```shell
+# From the project root
+python -m opal.webserver.server          # default port 9290
+python -m opal.webserver.server --port 8123
+```
+
+Then open [http://127.0.0.1:9290](http://127.0.0.1:9290) in a browser. The form covers all top-level configuration sections (simulation, model, router, workload, worker, KV-cache). Each field includes a short description of what it controls.
+
+When you click **Validate**, the UI posts the generated JSON to the server, which runs it through `OpalConfig().initialize()` — the same path used at simulation start. This catches two classes of problems early:
+
+1. **Malformed JSON** — syntax errors or structurally invalid input that would prevent the file from loading at all.
+2. **Missing stopping condition** — for non-trace workloads (i.e. anything other than `Trace` / `SC25Workload`), at least one of `simulation_time`, `total_requests`, or `time_duration_sec` must be set to a positive value. A config that omits all three would run forever; the validator rejects it with an error message.
+
+**What it does not check:** most field-level mistakes — wrong types, out-of-range numbers, missing required keys inside `model`/`router`/`kvc`/`worker` sections, or whether a trace file path actually exists on disk — are only caught when the simulator first reads those values during a run. So validation here is a useful early sanity check, not a guarantee that the simulation will complete successfully.
+
+If the config passes, you can copy it to the clipboard or download it as a `.json` file directly.
+
+The server has no external dependencies (stdlib `http.server` only) and shuts down cleanly on Ctrl-C.
+
 ## Development 
 
 ### Unit Tests 

@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OPAL config builder</title>
+<style>
+  :root {
+    --bg: #faf7f2;
+    --fg: #2b2b33;
+    --muted: #7a7080;
+    --border: #e3dde7;
+    --code-bg: #f6f2ed;
+
+    --accent: #7a89c2;
+    --accent-fg: #2b3552;
+    --good: #4d8a5e;
+    --good-bg: #e7f3e9;
+    --good-border: #c6e0cc;
+    --bad: #b65151;
+    --bad-bg: #fbe9e7;
+    --bad-border: #f0c5be;
+
+    /* pastel section accents */
+    --sim:      #ede7f6;   --sim-edge:      #c6b6e0;
+    --model:    #e3f1e6;   --model-edge:    #b9d9c0;
+    --router:   #fbe9d8;   --router-edge:   #e8c8a3;
+    --workload: #dceaf6;   --workload-edge: #adc8e0;
+    --worker:   #f7dde3;   --worker-edge:   #e0a5b1;
+    --kvc:      #fbf3d2;   --kvc-edge:      #ddc885;
+  }
+
+  body {
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0;
+    padding: 28px;
+  }
+
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p.lede { color: var(--muted); margin: 0 0 26px; font-size: 15px; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 28px;
+    max-width: 1500px;
+  }
+
+  /* section panels */
+  details {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: white;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    overflow: hidden;
+  }
+  details > summary {
+    padding: 11px 16px;
+    cursor: pointer;
+    font-weight: 600;
+    user-select: none;
+    background: linear-gradient(90deg, var(--section-bg, #f0eaea) 0%, white 100%);
+    border-bottom: 1px solid var(--section-edge, var(--border));
+    list-style: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 8px;
+    transition: transform 0.15s;
+    color: var(--muted);
+  }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details.sim      { --section-bg: var(--sim);      --section-edge: var(--sim-edge); }
+  details.model    { --section-bg: var(--model);    --section-edge: var(--model-edge); }
+  details.router   { --section-bg: var(--router);   --section-edge: var(--router-edge); }
+  details.workload { --section-bg: var(--workload); --section-edge: var(--workload-edge); }
+  details.worker   { --section-bg: var(--worker);   --section-edge: var(--worker-edge); }
+  details.kvc      { --section-bg: var(--kvc);      --section-edge: var(--kvc-edge); }
+
+  .body { padding: 14px 16px; }
+
+  /* sub-headings inside a section (e.g. worker_params, hw, vllm_params) */
+  h3.subhead {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    margin: 20px 0 8px;
+    padding-bottom: 5px;
+    border-bottom: 1px dashed var(--border);
+  }
+  h3.subhead:first-child { margin-top: 0; }
+
+  /* field block: label/input on one row, hint underneath */
+  .field {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    column-gap: 14px;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #f3eef0;
+  }
+  .field:last-child { border-bottom: none; }
+  .field > label { font-weight: 500; }
+  .field .hint {
+    grid-column: 2 / 3;
+    color: var(--muted);
+    font-size: 13.5px;
+    margin-top: 3px;
+    line-height: 1.45;
+  }
+  .field.checkbox { grid-template-columns: 240px auto 1fr; }
+  .field.checkbox .hint { grid-column: 2 / 4; }
+
+  /* inputs */
+  input[type=text], input[type=number], select, textarea {
+    font: inherit;
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: white;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(122,137,194,0.18);
+  }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  textarea { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+
+  /* stages */
+  .stages { display: flex; flex-direction: column; gap: 12px; }
+  .stage {
+    border: 1px solid var(--workload-edge);
+    border-radius: 8px;
+    padding: 12px;
+    background: #fbfdff;
+  }
+  .stage-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px dashed var(--workload-edge);
+  }
+  .stage-head strong { font-size: 15px; color: var(--accent-fg); }
+
+  /* buttons */
+  button {
+    font: inherit;
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    background: white;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  button:hover { background: #f4f0f5; }
+  button.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  button.primary:hover { background: var(--accent-fg); border-color: var(--accent-fg); }
+  button.danger { color: var(--bad); border-color: var(--bad-border); }
+  button.danger:hover { background: var(--bad-bg); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .toolbar { display: flex; gap: 10px; margin: 18px 0; flex-wrap: wrap; align-items: center; }
+
+  /* preview */
+  pre.preview {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    overflow: auto;
+    max-height: 72vh;
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+
+  /* status banner */
+  .status {
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    display: none;
+    font-weight: 500;
+  }
+  .status.ok  { display: block; background: var(--good-bg); color: var(--good); border: 1px solid var(--good-border); }
+  .status.bad { display: block; background: var(--bad-bg);  color: var(--bad);  border: 1px solid var(--bad-border); }
+  .status.info { display: block; background: #eceaf3; color: var(--accent-fg); border: 1px solid #d6cfe5; }
+
+  .right h2 {
+    font-size: 13px;
+    margin: 0 0 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+  }
+
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>OPAL config builder</h1>
+<p class="lede">Mirrors <code>configs/defaults.json</code>. Submit validates against <code>OpalConfig().initialize()</code>, then download.</p>
+
+<div class="layout">
+  <form id="cfg" class="left" autocomplete="off">
+
+    <!-- ============ simulation ============ -->
+    <details class="sim" open>
+      <summary>simulation</summary>
+      <div class="body">
+
+        <div class="field">
+          <label>simulation_time</label>
+          <input type="number" step="any" name="simulation.simulation_time" value="-1.0" />
+          <div class="hint">Wall-clock seconds (virtual) to run. Use <code>-1</code> to run until the workload finishes.</div>
+        </div>
+
+        <div class="field">
+          <label>seed</label>
+          <input type="number" name="simulation.seed" value="42" />
+          <div class="hint">Random seed for reproducibility — controls workload sampling and any tie-breaking randomness.</div>
+        </div>
+
+        <div class="field">
+          <label>num_workers</label>
+          <input type="number" name="simulation.num_workers" value="1" min="1" />
+          <div class="hint">Initial worker (vLLM instance) count. The autoscaler can grow this up to <code>router.max_workers</code>.</div>
+        </div>
+
+        <div class="field checkbox">
+          <label>save_simulation_data</label>
+          <input type="checkbox" name="simulation.save_simulation_data" checked />
+          <span></span>
+          <div class="hint">Write per-stage stats JSON and (optionally) plots to <code>simulation-runs/&lt;timestamp&gt;/</code>.</div>
+        </div>
+
+        <div class="field checkbox">
+          <label>show_progress</label>
+          <input type="checkbox" name="simulation.show_progress" />
+          <span></span>
+          <div class="hint">Print a tqdm-style progress line during the run. Off by default for cleaner logs.</div>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- ============ model ============ -->
+    <details class="model">
+      <summary>model</summary>
+      <div class="body">
+
+        <div class="field">
+          <label>name</label>
+          <input type="text" name="model.model_params.name" value="granite-3.3-8b-instruct" />
+          <div class="hint">Folder name under <code>config_dir</code> containing a <code>config.json</code>. Drives architecture &amp; dimensions.</div>
+        </div>
+
+        <div class="field">
+          <label>config_dir</label>
+          <input type="text" name="model.model_params.config_dir" value="./model-configs/" />
+          <div class="hint">Directory where model config sub-folders live. Resolved relative to project root.</div>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- ============ router ============ -->
+    <details class="router">
+      <summary>router</summary>
+      <div class="body">
+
+        <div class="field checkbox">
+          <label>enable_scaling</label>
+          <input type="checkbox" name="router.router_params.enable_scaling" />
+          <span></span>
+          <div class="hint">Turn the per-second autoscaler on. When off, worker count is fixed at <code>simulation.num_workers</code>.</div>
+        </div>
+
+        <div class="field">
+          <label>max_queue_threshold</label>
+          <input type="number" name="router.router_params.max_queue_threshold" value="4" />
+          <div class="hint">If the busiest worker's queue exceeds this many in-flight requests, the autoscaler adds a worker.</div>
+        </div>
+
+        <div class="field">
+          <label>scale_latency</label>
+          <input type="number" name="router.router_params.scale_latency" value="40" />
+          <div class="hint">Virtual seconds the autoscaler waits between deciding to scale up and the new worker being ready.</div>
+        </div>
+
+        <div class="field">
+          <label>max_workers</label>
+          <input type="number" name="router.router_params.max_workers" value="50" />
+          <div class="hint">Upper bound on total workers the autoscaler will spawn.</div>
+        </div>
+
+        <div class="field">
+          <label>policy</label>
+          <select name="router.router_params.policy">
+            <option>RoundRobin</option>
+            <option>LeastLoaded</option>
+            <option>Random</option>
+            <option selected>MaxPrefix</option>
+            <option>Balanced</option>
+          </select>
+          <div class="hint">
+            Routing policy. <strong>RoundRobin</strong>: cycle. <strong>LeastLoaded</strong>: pick min-queue worker.
+            <strong>Random</strong>: uniform. <strong>MaxPrefix</strong>: prefer worker with the largest matching KV-cache prefix.
+            <strong>Balanced</strong>: combination policy.
+          </div>
+        </div>
+
+        <div class="field">
+          <label>periodic_infra_update_collection_time</label>
+          <input type="number" name="router.router_params.periodic_infra_update_collection_time" value="30" />
+          <div class="hint">Virtual seconds between router-side infra-event drains (KV events from workers).</div>
+        </div>
+
+        <div class="field">
+          <label>max_event_batch_size</label>
+          <input type="number" name="router.router_params.max_event_batch_size" value="64" />
+          <div class="hint">Upper bound on infra-events processed per drain. Caps router CPU per tick.</div>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- ============ workload ============ -->
+    <details class="workload">
+      <summary>workload (stages)</summary>
+      <div class="body">
+        <p class="hint" style="grid-column:auto; padding:0; margin:0 0 10px;">
+          Multi-stage workloads run in order. Each stage picks a generator <code>type</code> and supplies its own params.
+        </p>
+        <div id="stages" class="stages"></div>
+        <button type="button" id="add-stage" style="margin-top:12px">+ add stage</button>
+      </div>
+    </details>
+
+    <!-- ============ worker ============ -->
+    <details class="worker">
+      <summary>worker</summary>
+      <div class="body">
+
+        <h3 class="subhead">worker_params</h3>
+
+        <div class="field">
+          <label>worker_local_queue_capacity</label>
+          <input type="number" name="worker.worker_params.worker_local_queue_capacity" value="1" />
+          <div class="hint">Backpressure cap on the per-worker intake queue. <code>1</code> ≈ tight backpressure to the router.</div>
+        </div>
+
+        <div class="field">
+          <label>periodic_infra_update_time</label>
+          <input type="number" name="worker.worker_params.periodic_infra_update_time" value="30" />
+          <div class="hint">Virtual seconds between worker→router status pushes (gpu_util, queue depth, mem_used).</div>
+        </div>
+
+        <div class="field">
+          <label>kvcevent_coalesce_time</label>
+          <input type="number" name="worker.worker_params.kvcevent_coalesce_time" value="30" />
+          <div class="hint">Virtual seconds the worker batches KV-cache events before reporting them upstream.</div>
+        </div>
+
+        <h3 class="subhead">hw</h3>
+
+        <div class="field">
+          <label>gpu</label>
+          <input type="text" name="worker.hw.gpu" value="H100" />
+          <div class="hint">GPU label used in logs &amp; reports. Cosmetic — actual perf comes from <code>tflops</code> / <code>mem_bw_TBps</code>.</div>
+        </div>
+
+        <div class="field">
+          <label>memory_gb</label>
+          <input type="number" step="any" name="worker.hw.memory_gb" value="80" />
+          <div class="hint">HBM per GPU in GB. Free memory after model load becomes the KV-cache block pool.</div>
+        </div>
+
+        <div class="field">
+          <label>tflops</label>
+          <input type="number" step="any" name="worker.hw.tflops" value="989.5" />
+          <div class="hint">Peak compute throughput. Used by the roofline model for prefill latency estimation.</div>
+        </div>
+
+        <div class="field">
+          <label>mem_bw_TBps</label>
+          <input type="number" step="any" name="worker.hw.mem_bw_TBps" value="3.3" />
+          <div class="hint">HBM bandwidth in TB/s. Drives the bandwidth-bound side of the roofline (decode latency).</div>
+        </div>
+
+        <div class="field">
+          <label>tp</label>
+          <input type="number" name="worker.hw.tp" value="1" min="1" />
+          <div class="hint">Tensor-parallel degree per worker. KV cache is sharded across TP ranks; effective HBM = <code>memory_gb × tp</code>.</div>
+        </div>
+
+        <h3 class="subhead">vllm_params</h3>
+
+        <div class="field">
+          <label>max_num_seqs</label>
+          <input type="number" name="worker.vllm_params.max_num_seqs" value="256" />
+          <div class="hint">Max concurrent sequences in a single batch (vLLM's continuous-batching cap).</div>
+        </div>
+
+        <div class="field">
+          <label>max_num_batched_tokens</label>
+          <input type="number" name="worker.vllm_params.max_num_batched_tokens" value="8192" />
+          <div class="hint">Per-step token budget across prefill+decode. Also caps a single chunked-prefill chunk.</div>
+        </div>
+
+        <div class="field">
+          <label>max_kvc_ready_requests</label>
+          <input type="number" name="worker.vllm_params.max_kvc_ready_requests" value="8" />
+          <div class="hint">OPAL-only throttle: max waiting requests holding KV-cache fetch blocks at once. Avoids livelock under tiered KV.</div>
+        </div>
+
+        <div class="field checkbox">
+          <label>chunked_prefill</label>
+          <input type="checkbox" name="worker.vllm_params.chunked_prefill" checked />
+          <span></span>
+          <div class="hint">Split long prompts into chunks of <code>max_num_batched_tokens</code> so prefill mixes with decode each step.</div>
+        </div>
+
+        <div class="field">
+          <label>block_size</label>
+          <input type="number" name="worker.vllm_params.block_size" value="16" />
+          <div class="hint">KV-cache block granularity in tokens. Smaller = less internal fragmentation, more bookkeeping.</div>
+        </div>
+
+        <h3 class="subhead">inference_params</h3>
+
+        <div class="field">
+          <label>model</label>
+          <select name="worker.inference_params.model">
+            <option selected>roofline</option>
+            <option>synthetic</option>
+          </select>
+          <div class="hint">
+            Latency engine. <strong>roofline</strong>: analytical, uses <code>tflops</code>/<code>mem_bw_TBps</code> + (a, b) regression.
+            <strong>synthetic</strong>: fixed <code>mean_latency_secs</code> per step (debugging).
+          </div>
+        </div>
+
+        <div class="field">
+          <label>mean_latency_secs</label>
+          <input type="number" step="any" name="worker.inference_params.mean_latency_secs" value="1.0" />
+          <div class="hint">Synthetic-engine constant per-step latency. Ignored by the roofline engine.</div>
+        </div>
+
+        <div class="field">
+          <label>a</label>
+          <input type="text" name="worker.inference_params.a" value="4" />
+          <div class="hint">Roofline regression coefficient (compute side). Calibrate with <code>opal/regression-fitting/</code>.</div>
+        </div>
+
+        <div class="field">
+          <label>b</label>
+          <input type="text" name="worker.inference_params.b" value="24" />
+          <div class="hint">Roofline regression coefficient (bandwidth side). Calibrate with <code>opal/regression-fitting/</code>.</div>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- ============ kvc ============ -->
+    <details class="kvc">
+      <summary>kvc</summary>
+      <div class="body">
+
+        <div class="field">
+          <label>kvc_tiers</label>
+          <input type="text" name="kvc.kvc_tiers" value="CPUMemory" />
+          <div class="hint">Comma-separated tier names, in fill order: <code>CPUMemory, LocalNVMe, DistributedFS</code>. Spillover goes to the next tier.</div>
+        </div>
+
+        <div class="field">
+          <label>chunk_size</label>
+          <input type="number" name="kvc.chunk_size" value="256" />
+          <div class="hint">KV-cache chunking granularity for the prefix-token database (tokens per chunk).</div>
+        </div>
+
+        <div class="field checkbox">
+          <label>save_unfull_chunk</label>
+          <input type="checkbox" name="kvc.save_unfull_chunk" checked />
+          <span></span>
+          <div class="hint">When on, partial trailing chunks are persisted (better hit rate, more storage churn).</div>
+        </div>
+
+        <h3 class="subhead">CPUMemory  (fastest tier)</h3>
+        <div class="field">
+          <label>bandwidth_GBps</label>
+          <input type="number" step="any" name="kvc.CPUMemory.bandwidth_GBps" value="50" />
+          <div class="hint">Total bandwidth of the tier; fair-shared across concurrent transfers.</div>
+        </div>
+        <div class="field">
+          <label>latency_nsec</label>
+          <input type="number" name="kvc.CPUMemory.latency_nsec" value="200" />
+          <div class="hint">Per-request fixed latency. Requests with <code>size ≤ bw × latency</code> finish in this window without bandwidth contention.</div>
+        </div>
+        <div class="field">
+          <label>concurrency</label>
+          <input type="number" name="kvc.CPUMemory.concurrency" value="1000000" />
+          <div class="hint">Max parallel in-flight requests (SimPy resource cap). High = effectively unlimited.</div>
+        </div>
+        <div class="field">
+          <label>capacity_GB</label>
+          <input type="number" step="any" name="kvc.CPUMemory.capacity_GB" value="8" />
+          <div class="hint">Tier size. When full, new entries spill to the next tier in <code>kvc_tiers</code>.</div>
+        </div>
+
+        <h3 class="subhead">LocalNVMe  (mid tier)</h3>
+        <div class="field">
+          <label>bandwidth_GBps</label>
+          <input type="number" step="any" name="kvc.LocalNVMe.bandwidth_GBps" value="10" />
+          <div class="hint">Local NVMe read bandwidth. Slower than CPUMemory; faster than DistributedFS.</div>
+        </div>
+        <div class="field">
+          <label>latency_nsec</label>
+          <input type="number" name="kvc.LocalNVMe.latency_nsec" value="10000" />
+          <div class="hint">Per-request fixed latency. NVMe ≈ tens of µs per access.</div>
+        </div>
+        <div class="field">
+          <label>concurrency</label>
+          <input type="number" name="kvc.LocalNVMe.concurrency" value="1000" />
+          <div class="hint">Max parallel in-flight requests against the device.</div>
+        </div>
+        <div class="field">
+          <label>capacity_GB</label>
+          <input type="number" step="any" name="kvc.LocalNVMe.capacity_GB" value="1024" />
+          <div class="hint">Tier size in GB.</div>
+        </div>
+
+        <h3 class="subhead">DistributedFS  (slowest tier, singleton)</h3>
+        <div class="field">
+          <label>bandwidth_GBps</label>
+          <input type="number" step="any" name="kvc.DistributedFS.bandwidth_GBps" value="100" />
+          <div class="hint">Aggregate DFS bandwidth. Shared across <em>all</em> workers in the simulation.</div>
+        </div>
+        <div class="field">
+          <label>latency_nsec</label>
+          <input type="number" name="kvc.DistributedFS.latency_nsec" value="100000" />
+          <div class="hint">Per-request fixed latency. DFS ≈ hundreds of µs.</div>
+        </div>
+        <div class="field">
+          <label>concurrency</label>
+          <input type="number" name="kvc.DistributedFS.concurrency" value="1000" />
+          <div class="hint">Max parallel in-flight requests across the cluster.</div>
+        </div>
+        <div class="field">
+          <label>capacity_GB</label>
+          <input type="number" step="any" name="kvc.DistributedFS.capacity_GB" value="1048576" />
+          <div class="hint">Tier size in GB. Default ≈ 1 PB — effectively infinite for most experiments.</div>
+        </div>
+
+      </div>
+    </details>
+
+    <div class="toolbar">
+      <button type="button" class="primary" id="generate">Generate &amp; validate</button>
+      <button type="button" id="reset">Reset to defaults</button>
+    </div>
+  </form>
+
+  <div class="right">
+    <h2>output</h2>
+    <div id="status" class="status"></div>
+    <div class="toolbar">
+      <button type="button" id="copy" disabled>Copy JSON</button>
+      <button type="button" id="download" disabled>Download configs/&hellip;.json</button>
+      <input type="text" id="filename" value="my-config.json" style="flex:1; min-width: 180px;" />
+    </div>
+    <pre class="preview" id="preview">Generate to preview JSON.</pre>
+  </div>
+</div>
+
+<template id="stage-template">
+  <div class="stage" data-stage>
+    <div class="stage-head">
+      <strong>stage</strong>
+      <button type="button" class="danger" data-remove>remove</button>
+    </div>
+
+    <div class="field">
+      <label>type</label>
+      <select data-stage-type>
+        <option selected>UniformReqRate</option>
+        <option>ExponentialReqRate</option>
+        <option>trace</option>
+        <option>SC25Workload</option>
+      </select>
+      <div class="hint" data-stage-typehint>
+        Workload generator class. Switching this re-renders the params below.
+      </div>
+    </div>
+
+    <div data-stage-fields></div>
+  </div>
+</template>
+
+<script>
+"use strict";
+
+// per-field schema for each stage type.
+// shape: { type → [ [key, kind, default, hint], ... ] }
+const STAGE_FIELDS = {
+  UniformReqRate: [
+    ["request_rate",          "number", 2.0,    "Constant arrival rate in requests/sec."],
+    ["total_requests",        "number", 100,    "Stop after this many requests. -1 = run until simulation_time."],
+    ["prompt_size_min",       "number", 32,     "Lower bound on uniform-sampled prompt length (tokens)."],
+    ["prompt_size_max",       "number", 16384,  "Upper bound on uniform-sampled prompt length (tokens)."],
+    ["default_prefix_length", "number", 1024,   "Shared prefix length sent with each prompt. Drives KV-cache hit rate."],
+    ["jitter",                "number", 0.0,    "Inter-arrival jitter [0..1]; 0 = deterministic."],
+    ["output_tokens_min",     "number", 32,     "Lower bound on uniform-sampled output length."],
+    ["output_tokens_max",     "number", 128,    "Upper bound on uniform-sampled output length."],
+  ],
+  ExponentialReqRate: [
+    ["request_rate",          "number", 2.0,    "Mean arrival rate; inter-arrival times ~ Exp(1/rate)."],
+    ["total_requests",        "number", 100,    "Stop after this many requests. -1 = run until simulation_time."],
+    ["prompt_size_min",       "number", 32,     "Lower bound on uniform-sampled prompt length (tokens)."],
+    ["prompt_size_max",       "number", 16384,  "Upper bound on uniform-sampled prompt length (tokens)."],
+    ["default_prefix_length", "number", 1024,   "Shared prefix length sent with each prompt. Drives KV-cache hit rate."],
+    ["jitter",                "number", 0.0,    "Extra inter-arrival jitter on top of the exponential draw."],
+    ["output_tokens_min",     "number", 32,     "Lower bound on uniform-sampled output length."],
+    ["output_tokens_max",     "number", 128,    "Upper bound on uniform-sampled output length."],
+  ],
+  trace: [
+    ["total_requests",     "number", -1,                       "Cap how many trace lines to replay. -1 = whole file."],
+    ["chunk_size",         "number", 1,                        "Lines pulled per disk read. Throughput knob; doesn't change semantics."],
+    ["multiplier_to_sec",  "number", 0.001,                    "Trace-timestamp → seconds (1e-3 = ms timestamps)."],
+    ["trace_file",         "text",   "traces/hello.jsonl",     "Path (absolute or relative to project root) to a JSONL trace."],
+  ],
+  SC25Workload: [
+    ["total_requests", "number", 100, "How many requests to emit using the SC25 mix."],
+  ],
+};
+
+const STAGE_TYPE_HINTS = {
+  UniformReqRate:     "Deterministic Poisson-free arrivals at a fixed rate; uniform prompt/output sizes.",
+  ExponentialReqRate: "Poisson arrivals (Exp(1/rate) inter-arrival); uniform prompt/output sizes.",
+  trace:              "Replay a JSONL trace file. Each line drives one request's timing and sizes.",
+  SC25Workload:       "Built-in SC'25 conversation-style mix.",
+};
+
+const stagesEl = document.getElementById("stages");
+
+function renderStageFields(stageEl) {
+  const type = stageEl.querySelector("[data-stage-type]").value;
+  const container = stageEl.querySelector("[data-stage-fields]");
+  const typehintEl = stageEl.querySelector("[data-stage-typehint]");
+  if (typehintEl) typehintEl.textContent = STAGE_TYPE_HINTS[type] || "";
+
+  container.innerHTML = "";
+  for (const [key, kind, def, hint] of STAGE_FIELDS[type] || []) {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+
+    const lbl = document.createElement("label");
+    lbl.textContent = key;
+    wrap.appendChild(lbl);
+
+    const inp = document.createElement("input");
+    inp.type = kind === "number" ? "number" : "text";
+    if (kind === "number") inp.step = "any";
+    inp.value = def;
+    inp.dataset.stageField = key;
+    inp.dataset.kind = kind;
+    wrap.appendChild(inp);
+
+    const hintEl = document.createElement("div");
+    hintEl.className = "hint";
+    hintEl.textContent = hint;
+    wrap.appendChild(hintEl);
+
+    container.appendChild(wrap);
+  }
+}
+
+function addStage(initialType) {
+  const tpl = document.getElementById("stage-template");
+  const node = tpl.content.firstElementChild.cloneNode(true);
+  if (initialType) node.querySelector("[data-stage-type]").value = initialType;
+  node.querySelector("[data-stage-type]").addEventListener("change", () => renderStageFields(node));
+  node.querySelector("[data-remove]").addEventListener("click", () => {
+    if (stagesEl.children.length > 1) node.remove();
+    else alert("at least one stage is required");
+  });
+  stagesEl.appendChild(node);
+  renderStageFields(node);
+}
+
+document.getElementById("add-stage").addEventListener("click", () => addStage());
+addStage("UniformReqRate");
+
+// -------- form → nested config object --------
+function setNested(obj, dotted, value) {
+  const parts = dotted.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] === undefined) cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+function buildConfig() {
+  const form = document.getElementById("cfg");
+  const cfg = {};
+
+  for (const el of form.querySelectorAll("input[name], select[name]")) {
+    const name = el.name;
+    let val;
+    if (el.type === "checkbox") {
+      val = el.checked;
+    } else if (el.type === "number") {
+      if (el.value === "") continue;
+      val = Number(el.value);
+      if (Number.isNaN(val)) val = el.value;
+    } else if (name === "kvc.kvc_tiers") {
+      val = el.value.split(",").map(s => s.trim()).filter(Boolean);
+    } else {
+      val = el.value;
+    }
+    setNested(cfg, name, val);
+  }
+
+  // stages
+  cfg.workload = cfg.workload || {};
+  cfg.workload.stages = [];
+  for (const stageEl of stagesEl.querySelectorAll("[data-stage]")) {
+    const type = stageEl.querySelector("[data-stage-type]").value;
+    const stage = { type, workload_params: {} };
+    for (const inp of stageEl.querySelectorAll("[data-stage-field]")) {
+      const key = inp.dataset.stageField;
+      const kind = inp.dataset.kind;
+      let v = inp.value;
+      if (kind === "number") {
+        if (v === "") continue;
+        const n = Number(v);
+        v = Number.isNaN(n) ? v : n;
+      }
+      stage.workload_params[key] = v;
+    }
+    cfg.workload.stages.push(stage);
+  }
+
+  return cfg;
+}
+
+// -------- UI wiring --------
+const previewEl = document.getElementById("preview");
+const statusEl = document.getElementById("status");
+const copyBtn = document.getElementById("copy");
+const dlBtn = document.getElementById("download");
+
+let lastJson = null;
+
+function setStatus(kind, msg) {
+  statusEl.className = "status " + kind;
+  statusEl.textContent = msg;
+}
+
+document.getElementById("generate").addEventListener("click", async () => {
+  const cfg = buildConfig();
+  const text = JSON.stringify(cfg, null, 2);
+  previewEl.textContent = text;
+  copyBtn.disabled = true;
+  dlBtn.disabled = true;
+  setStatus("info", "validating against OpalConfig.initialize()…");
+
+  try {
+    const resp = await fetch("/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: text,
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      setStatus("ok", "✓ valid — OpalConfig().initialize() succeeded");
+      lastJson = text;
+      copyBtn.disabled = false;
+      dlBtn.disabled = false;
+    } else {
+      setStatus("bad", "✗ " + (result.error || "validation failed"));
+    }
+  } catch (e) {
+    setStatus("bad", "✗ network/server error: " + e.message);
+  }
+});
+
+copyBtn.addEventListener("click", async () => {
+  if (!lastJson) return;
+  try {
+    await navigator.clipboard.writeText(lastJson);
+    copyBtn.textContent = "Copied ✓";
+    setTimeout(() => (copyBtn.textContent = "Copy JSON"), 1500);
+  } catch (e) {
+    alert("clipboard failed: " + e.message);
+  }
+});
+
+dlBtn.addEventListener("click", () => {
+  if (!lastJson) return;
+  let name = document.getElementById("filename").value.trim() || "my-config.json";
+  if (!name.endsWith(".json")) name += ".json";
+  const blob = new Blob([lastJson], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById("reset").addEventListener("click", () => {
+  if (!confirm("reset all fields to defaults?")) return;
+  document.getElementById("cfg").reset();
+  stagesEl.innerHTML = "";
+  addStage("UniformReqRate");
+  previewEl.textContent = "Generate to preview JSON.";
+  statusEl.style.display = "none";
+  copyBtn.disabled = true;
+  dlBtn.disabled = true;
+  lastJson = null;
+});
+</script>
+</body>
+</html>
