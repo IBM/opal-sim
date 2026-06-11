@@ -130,7 +130,7 @@ class ConfigProxy:
 class OpalConfig:
     def __init__(self):
         self.log = logging.getLogger("OpalConfig")
-        self.default_config_file = os.path.join(os.path.dirname(__file__), "./sim_config/defaults.json")
+        self.default_config_file = os.path.normpath(os.path.join(os.path.dirname(__file__), "../configs/defaults.json"))
         self._config = None
         self._defaults = asdict(OpalDefaults())
         self._accessed_keys = set()  # Track which config keys are accessed
