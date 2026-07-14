@@ -371,6 +371,9 @@ class OpalTokenDatabase(metaclass=abc.ABCMeta):
         hashes: Optional[List[int]] = None,
         offsets: Optional[List[int]] = None,
         make_key: bool = False,
+        start_idx: int = 0,
+        prefix_hash: Optional[int] = None,
+        end_idx: Optional[int] = None,
     ) -> Iterable[ProcessTokensResult]:
         """Process the tokens and return the corresponding cache engine keys.
 
@@ -393,34 +396,36 @@ class OpalTokenDatabase(metaclass=abc.ABCMeta):
         """
         self._count_process_tokens += 1
         if tokens is not None:
-            total_len = len(tokens)
-            token_chunks = self._chunk_tokens(tokens)
-            prefix_hashes = self._prefix_hash(token_chunks)
-            for chunk_id, hash_val in enumerate(prefix_hashes):
-                start_idx = chunk_id * self.chunk_size
-                end_idx = min(start_idx + self.chunk_size, total_len)
-                if make_key:
-                    yield (
-                        start_idx,
-                        end_idx,
-                        self._make_key_by_hash(hash_val),
-                    )
-                else:
-                    yield start_idx, end_idx, hash_val
+            if start_idx == 0 and prefix_hash is None and end_idx is None:
+                # Full pass from token 0 (original behaviour, unchanged).
+                total_len = len(tokens)
+                token_chunks = self._chunk_tokens(tokens)
+                prefix_hashes = self._prefix_hash(token_chunks)
+                for chunk_id, hash_val in enumerate(prefix_hashes):
+                    s = chunk_id * self.chunk_size
+                    e = min(s + self.chunk_size, total_len)
+                    yield (s, e, self._make_key_by_hash(hash_val)) if make_key else (s, e, hash_val)
+            else:
+                # Resume the chain from start_idx (was process_tokens_from).
+                assert start_idx % self.chunk_size == 0, f"start_idx {start_idx} not chunk-aligned"
+                if end_idx is None:
+                    end_idx = len(tokens)
+                if prefix_hash is None:
+                    prefix_hash = self._get_init_hash()
+                chunk_id = start_idx // self.chunk_size
+                for token_chunk in self._chunk_tokens(tokens[start_idx:end_idx]):
+                    prefix_hash = self._hash_tokens(token_chunk, prefix_hash)
+                    s = chunk_id * self.chunk_size
+                    e = min(s + self.chunk_size, end_idx)
+                    yield (s, e, self._make_key_by_hash(prefix_hash)) if make_key else (s, e, prefix_hash)
+                    chunk_id += 1
         elif hashes is not None:
             assert offsets is not None, "If hashes are provided, offsets must also be provided."
-            start_idx = 0
+            start = 0
             for hash_val, offset in zip(hashes, offsets, strict=False):
-                end_idx = start_idx + offset
-                if make_key:
-                    yield (
-                        start_idx,
-                        end_idx,
-                        self._make_key_by_hash(hash_val),
-                    )
-                else:
-                    yield start_idx, end_idx, hash_val
-                start_idx = end_idx
+                end = start + offset
+                yield (start, end, self._make_key_by_hash(hash_val)) if make_key else (start, end, hash_val)
+                start = end
         else:
             raise ValueError("Either tokens or hashes must be provided.")
 

@@ -29,6 +29,8 @@ class LLMRequestStats:
 
         self.__scheduler_timestamps = []
         self.__kvc_hit_tokens = 0
+        self.__kvc_hit_tokens_per_tier: dict[str, int] = {}
+
         # min what is needed is one
         self.__num_prefill_sched_steps = 0
 
@@ -106,10 +108,17 @@ class LLMRequestStats:
         # TODO: may be we can do better
         return self.__scheduler_timestamps[0] - self.__scheduler_timestamps[-1]
 
+    def set_kvc_hit_tokens_per_tier(self, tier_name: str, tokens: int):
+        self.__kvc_hit_tokens_per_tier[tier_name] = tokens
+
+    def get_kvc_hit_tokens_per_tier(self) -> dict[str, int]:
+        return dict(self.__kvc_hit_tokens_per_tier)
+
+
 
 class LLMRequest:
     _id_counter = itertools.count()
-    __slots__ = ("id", "env", "stage_id", "worker_id", "input_length", "output_length", "hash_ids", "stats")
+    __slots__ = ("id", "env", "stage_id", "worker_id", "input_length", "output_length", "output_token_ids", "hash_ids", "stats")
 
     """Represents a request with an ID and timing information."""
 
@@ -121,6 +130,7 @@ class LLMRequest:
         self.input_length = input_length
         self.output_length = output_length
         self.hash_ids = hash_ids
+        self.output_token_ids: list[int] | None = None
         self.stats = LLMRequestStats()
         self.stats._1_creation_time = self.env.now
 

@@ -76,10 +76,12 @@ import simpy
 
 from opal.events import KVCEvent, SystemEvent
 from opal.gpu_model import GPUModel
-from opal.kvc_manager import OpalKVCacheEngine
+from opal.kvc_manager import OpalKVCacheEngine, OpalTokenDatabase
 from opal.llm_model import OpalModelConfig
 from opal.request import LLMRequest
 from opal.util import parse_bool, safe_process
+from opal.apc_policy import BaseAPCPolicy, make_apc_policy
+from opal.gpu_apc import GpuApc
 
 # ================================================================================
 # SCHEDULER DATA STRUCTURES
@@ -108,6 +110,7 @@ class VLLMSchedulerConfig:
     gpu_memory_kvcache_bytes: int = 16 * 1024**3
     max_kvc_ready_requests: int = 4  # Max number of KVC-ready requests waiting in the waiting queue
     lookahead_reqs: int = 256  # Max number of waiting requests to scan when batch is non-empty
+    enable_gpu_apc: bool = False  # GPU Automatic Prefix Caching 
 
     def __post_init__(self):
         if False == self.chunked_prefill:
@@ -147,6 +150,11 @@ class SchedulerRequest:
     prompt_processed: int = 0
     decode_tokens_generated: int = 0
     kvc_fetch_in_progress: bool = False
+    apc_owned_hashes: set = field(default_factory=set) # Blocks this request references; decref'd at retirement.
+    apc_resolved_tokens: int = 0 # Tokens already processed by APC resolution. 
+    apc_chain_hash: Optional[int] = None # Prefix-hash so far — lets hashing resume from the suffix.
+    apc_hash_ids_cache: Optional[list] = None # Cached prompt+decode token ids, extended in place.
+    apc_private_blocks: int = 0 # This request's blocks not in the APC table; freed directly.
 
     def is_prefill_complete(self) -> bool:
         """Check if prefill phase is complete."""
@@ -299,6 +307,26 @@ class LLMWorkerVLLMScheduler:
         # KVC fetch memory tracking
         self.kvc_fetch_blocks_in_flight = 0  # Blocks currently being fetched
 
+        # Invariant: free_gpu_blocks + self._apc.resident == total_gpu_blocks
+        # (a registered block holds memory regardless of ref_count; ref_count
+        # only governs eviction eligibility, not this capacity invariant).
+        # Dedicated token database for APC: chunk_size == block_size, partial
+        # last block excluded so a partially filled block is never hashed.
+        _apc_token_db = OpalTokenDatabase(
+            self.block_size,
+            self._kvc_manager.token_database.metadata,
+        )
+        _apc_token_db.save_unfull_chunk = False
+        # Pluggable eviction policy (this build ships: lru).
+        _policy_name = self.opalConfig["worker"]["vllm_params"].get("apc_eviction_policy", "lru")
+        _policy_ttl = float(self.opalConfig["worker"]["vllm_params"].get("apc_lru_ttl", 0.0))
+        _apc_policy: BaseAPCPolicy = make_apc_policy(
+            _policy_name,
+            ttl=_policy_ttl,
+            clock=lambda: self.simpy_env.now,
+        )
+        self._apc = GpuApc(_apc_policy, _apc_token_db, self.block_size)
+
         # Request queues by state
         self.waiting_requests: List[VLLMSchedulerRequest] = []
         self.running_requests: List[VLLMSchedulerRequest] = []
@@ -344,6 +372,8 @@ class LLMWorkerVLLMScheduler:
             f"\n  - free_gpu_blocks: {self.free_gpu_blocks}"
             f"\n  - max_kvc_fetch_blocks: {self.max_kvc_fetch_blocks}"
             f"\n  - max_kvc_ready_requests: {self.scheduler_config.max_kvc_ready_requests}"
+            f"\n  - GPU APC: {'ENABLED' if self.scheduler_config.enable_gpu_apc else 'DISABLED'}"
+            f"\n  - policy={_policy_name}"
         )
         self.sanity_checks()
         # Start simulation processes
@@ -430,6 +460,7 @@ class LLMWorkerVLLMScheduler:
         gpu_memory_kvcache_bytes = int(gpu_memory_gb * 1024**3)
         max_kvc_ready_requests = vllm_params["max_kvc_ready_requests"]
         lookahead_reqs = vllm_params.get("lookahead_reqs", 256)  # Default to 256 if not specified
+        enable_gpu_apc = vllm_params.get("enable_gpu_apc", False)
 
         config = VLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,
@@ -439,8 +470,62 @@ class LLMWorkerVLLMScheduler:
             gpu_memory_kvcache_bytes=gpu_memory_kvcache_bytes,
             max_kvc_ready_requests=max_kvc_ready_requests,
             lookahead_reqs=lookahead_reqs,
+            enable_gpu_apc=enable_gpu_apc,
         )
         return config
+
+    def _apc_admit_tokens(self, request: "VLLMSchedulerRequest", tokens_to_add: int) -> Optional[int]:
+        """GPU-block cost of advancing `request` by tokens_to_add, sharing-aware.
+        Evicts idle blocks to cover a shortfall; returns the capacity delta
+        applied (>= 0), or None (no side effects) if it can't fit even after
+        evicting. Token-budget / max_num_seqs checks are the caller's."""
+        if tokens_to_add == 0:
+            return 0
+
+        if not self.scheduler_config.enable_gpu_apc:
+            # No APC: plain per-block allocation.
+            current_tokens = request.prompt_processed + request.decode_tokens_generated
+            new_tokens = current_tokens + tokens_to_add
+            current_blocks = (current_tokens + self.block_size - 1) // self.block_size
+            new_blocks = (new_tokens + self.block_size - 1) // self.block_size
+            blocks_needed = new_blocks - current_blocks
+            if blocks_needed > self.free_gpu_blocks:
+                return None
+            self.free_gpu_blocks -= blocks_needed
+            request.allocated_blocks += blocks_needed
+            return blocks_needed
+
+        # APC: price it, evict if short, then commit.
+        resolution, hash_ids_ref = self._apc.resolve(request, tokens_to_add)
+        if resolution.capacity_delta > self.free_gpu_blocks:
+            self._apc_evict_blocks(resolution.capacity_delta - self.free_gpu_blocks)
+        if resolution.capacity_delta > self.free_gpu_blocks:
+            return None  # still no room after evicting
+        self._apc.commit(request, resolution, hash_ids_ref, tokens_to_add)
+        self.free_gpu_blocks -= resolution.capacity_delta
+        request.allocated_blocks += resolution.capacity_delta
+        return resolution.capacity_delta
+
+    def _apc_evict_blocks(self, blocks_needed: int) -> int:
+        """Evict idle blocks until blocks_needed are freed (or none remain),
+        return them to free_gpu_blocks, and write each evicted prefix through to
+        the CPU/DFS tier. GpuApc picks the victims; capacity + tier I/O (which
+        need worker/KVC state) stay here."""
+        freed, store_sources = self._apc.evict(blocks_needed)
+        self.free_gpu_blocks += freed
+        kvc_chunk_size = self._kvc_manager.token_database.chunk_size
+        pending_stores: dict[int, tuple] = {}  # id(hash_ids_ref) -> (hash_ids_ref, max_end_idx)
+        for hash_ids_ref, end_idx in store_sources:
+            if end_idx % kvc_chunk_size != 0:
+                continue
+            ref_id = id(hash_ids_ref)
+            if ref_id not in pending_stores or end_idx > pending_stores[ref_id][1]:
+                pending_stores[ref_id] = (hash_ids_ref, end_idx)
+        for hash_ids_ref, end_idx in pending_stores.values():
+            def _store(h_ids):
+                yield from self._kvc_manager.store(h_ids)
+            self.simpy_env.process(_store(hash_ids_ref[:end_idx]))
+        return freed
 
     def _select_preemption_candidate(self, requests: List[VLLMSchedulerRequest]) -> Optional[VLLMSchedulerRequest]:
         """
@@ -1017,35 +1102,17 @@ class LLMWorkerVLLMScheduler:
 
             # Decode always generates 1 token
             tokens_to_add = 1
-            blocks_needed = self._calculate_blocks_needed(req, tokens_to_add)
+            token_budget_ok = batch.total_tokens + tokens_to_add <= self.scheduler_config.max_num_batched_tokens
+            delta = self._apc_admit_tokens(req, tokens_to_add) if token_budget_ok else None
 
-            # Check if we can fit this request
-            if (
-                batch.total_tokens + tokens_to_add <= self.scheduler_config.max_num_batched_tokens
-                and blocks_needed <= self.free_gpu_blocks
-            ):
-                # Can resume - allocate memory and update batch
-                if blocks_needed > 0:
-                    req.allocated_blocks += blocks_needed
-                    self.free_gpu_blocks -= blocks_needed
-
+            if delta is not None:
                 batch.decode_tokens += tokens_to_add
                 batch.total_tokens += tokens_to_add
                 batch.request_tokens[req.request_id] = tokens_to_add
-
-                self.log.debug(
-                    f"Resumed decode request {req.request_id}: tokens={tokens_to_add}, "
-                    f"blocks_needed={blocks_needed}, free_blocks={self.free_gpu_blocks}/{self.total_gpu_blocks}"
-                )
+            
             else:
                 # Cannot fit - mark for preemption
                 requests_to_preempt.append(req)
-                self.log.debug(
-                    f"Cannot resume decode request {req.request_id}: "
-                    f"tokens_needed={tokens_to_add}, blocks_needed={blocks_needed}, "
-                    f"batch_tokens={batch.total_tokens}/{self.scheduler_config.max_num_batched_tokens}, "
-                    f"free_blocks={self.free_gpu_blocks}/{self.total_gpu_blocks}"
-                )
 
         # Phase 2: Resume existing prefill requests
         for req in batch.prefill_requests[:]:  # Iterate over copy
@@ -1063,30 +1130,18 @@ class LLMWorkerVLLMScheduler:
                 self.log.debug(f"No token budget for prefill request {req.request_id}")
                 continue
 
-            blocks_needed = self._calculate_blocks_needed(req, tokens_to_add)
+            delta = self._apc_admit_tokens(req, tokens_to_add)
 
             # Check if we can fit this request
-            if blocks_needed <= self.free_gpu_blocks:
-                # Can resume - allocate memory and update batch
-                if blocks_needed > 0:
-                    req.allocated_blocks += blocks_needed
-                    self.free_gpu_blocks -= blocks_needed
-
+            if delta is not None:
                 batch.prefill_tokens += tokens_to_add
                 batch.total_tokens += tokens_to_add
                 batch.request_tokens[req.request_id] = tokens_to_add
 
-                self.log.debug(
-                    f"Resumed prefill request {req.request_id}: tokens={tokens_to_add}, "
-                    f"blocks_needed={blocks_needed}, free_blocks={self.free_gpu_blocks}/{self.total_gpu_blocks}"
-                )
             else:
                 # Cannot fit - mark for preemption
                 requests_to_preempt.append(req)
-                self.log.debug(
-                    f"Cannot resume prefill request {req.request_id}: "
-                    f"blocks_needed={blocks_needed}, free_blocks={self.free_gpu_blocks}/{self.total_gpu_blocks}"
-                )
+           
 
         # Phase 3: Preempt requests that cannot fit
         for req in requests_to_preempt:
@@ -1187,52 +1242,73 @@ class LLMWorkerVLLMScheduler:
 
             # Handle WAITING phase: perform KVC lookup
             if req.phase == RequestPhase.WAITING:
-                # self.log.debug(f"KVC lookup for request {req.request_id}")
                 req.llm_request.stats._3_start_processing_time = self.simpy_env.now
 
-                # Perform KVC lookup, check if we already did the lookup
+                # Step 1: GPU APC check (no yield — fresh on every scheduling step
+                # so we always see the current APC state).
+                apc_prefix = 0
+                if self.scheduler_config.enable_gpu_apc:
+                    apc_prefix = self._apc.lookup(req.hash_ids, claim=False)
+                    self.log.info(
+                        f"[KVC Lookup] [APC] | Request {req.request_id} | "
+                        f"Found {apc_prefix}/{req.prompt_tokens} prefix tokens in GPU APC"
+                    )
+
+                # Step 2: tiered-storage lookup (cached after first call — may yield).
+                # Always computed regardless of the APC result above, so that APC's
+                # zero-I/O advantage can still be compared against the full prefix
+                # length available in CPU/DFS tiers.
                 if not hasattr(req, "_kvc_lookup_done"):
-                    # This is to prevent a bug where in the case of single worker and limited kvc-fetching
-                    # waiting queue will be long, and this lookup() will be performed repeatedly in each
-                    # scheduling step to find out what can be scheduled, and build batches with.
-                    # To avoid this exponentially lookups...we cache the result.
-                    num_prefix_tokens = yield safe_process(
+                    tiered_prefix = yield safe_process(
                         self.simpy_env, self._kvc_manager.lookup(tokens=req.hash_ids)
                     )
+                    self.log.info(
+                        f"[KVC Lookup] [Tiered] | Request {req.request_id} | "
+                        f"Found {tiered_prefix}/{req.prompt_tokens} prefix tokens in tiered storage"
+                    )
                     req._kvc_lookup_done = True
-                    req._kvc_prefix_tokens = num_prefix_tokens
+                    req._kvc_prefix_tokens = tiered_prefix
                 else:
-                    num_prefix_tokens = req._kvc_prefix_tokens
+                    tiered_prefix = req._kvc_prefix_tokens
 
-                # self.log.debug(
-                #     f"Request {req.request_id}: prefix match = {num_prefix_tokens}/{req.prompt_tokens} tokens"
-                # )
+                # Step 3: use whichever source gives the longer prefix.
+                # APC is preferred when tied because it requires no I/O.
+                if apc_prefix >= tiered_prefix and apc_prefix > 0:
+                    # APC wins: attach (share) the matched blocks and mark READY
+                    # immediately (no I/O). Non-destructive -- these blocks stay
+                    # resident/discoverable for any other concurrent request, and
+                    # since they're shared, this request pays no GPU-block cost
+                    # for the matched portion (only the simulated prefill compute
+                    # for those tokens is skipped, which is the actual benefit).
+                    apc_hit = self._apc.lookup(req.hash_ids, claim=True, request=req)
+                    req.allocated_blocks = 0
+                    req.prompt_processed = apc_hit
+                    req.apc_resolved_tokens = apc_hit  # already hashed/attached -- nothing private here
+                    req.phase = RequestPhase.READY
+                    req.llm_request.stats._4_request_ready_time = self.simpy_env.now
+                    req.llm_request.stats.kvc_hit_type = "apc"
+                    req.llm_request.stats.set_prefix_hit_tokens(apc_hit)
+                    req.llm_request.stats.set_kvc_hit_tokens_per_tier("HBM_APC", apc_hit)
 
-                if num_prefix_tokens > 0:
-                    # Check if there's enough GPU memory for KVC blocks
+                elif tiered_prefix > 0:
+                    # Tiered storage wins: initiate async fetch from CPU/DFS.
+                    num_prefix_tokens = tiered_prefix
                     kvc_blocks = (num_prefix_tokens + self.block_size - 1) // self.block_size
 
-                    # KVC fetch throttling - check if we can issue this fetch
                     if not self._can_issue_kvc_fetch(kvc_blocks):
-                        # Cannot issue fetch - skip this request
-                        # the request is left in the WAITING state
                         continue
 
-                    # Check if we have enough blocks
                     if kvc_blocks > self.free_gpu_blocks:
-                        self.log.debug(
-                            f"Request {req.request_id}: insufficient GPU blocks for KVC fetching "
-                            f"(need {kvc_blocks}, have {self.free_gpu_blocks})."
-                        )
-                        # the request is left in the WAITING state
-                        continue
+                        idle_blocks = self._apc.evictable_count() if self.scheduler_config.enable_gpu_apc else 0
+                        if kvc_blocks <= self.free_gpu_blocks + idle_blocks:
+                            self._apc_evict_blocks(kvc_blocks - self.free_gpu_blocks)
+                        else:
+                            continue
 
-                    # Allocate GPU blocks before async transfer
                     self.free_gpu_blocks -= kvc_blocks
                     req.allocated_blocks = kvc_blocks
                     self.kvc_fetch_blocks_in_flight += kvc_blocks
 
-                    # Sanity check
                     if self.free_gpu_blocks < 0:
                         self.log.error(f"CRITICAL: free_gpu_blocks went negative!")
                         self.free_gpu_blocks += kvc_blocks
@@ -1240,21 +1316,15 @@ class LLMWorkerVLLMScheduler:
                         self.kvc_fetch_blocks_in_flight -= kvc_blocks
                         assert False, "Free GPU blocks should never be negative"
 
-                    # Mark as fetching and launch async transfer
                     req.phase = RequestPhase.FETCH_KVC
                     req.kvc_fetch_in_progress = True
-
-                    self.log.debug(
-                        f"Request {req.request_id}: initiating async KVC retrieve for {num_prefix_tokens} tokens, "
-                        f"allocated {kvc_blocks} blocks (free_blocks={self.free_gpu_blocks}/{self.total_gpu_blocks})"
-                    )
-
                     self.simpy_env.process(self._async_kvc_retrieve(req, num_prefix_tokens))
+
                 else:
-                    # No prefix match, mark as READY
+                    # No prefix found in any tier — mark READY for full prefill.
                     req.phase = RequestPhase.READY
                     req.llm_request.stats._4_request_ready_time = self.simpy_env.now
-                    self.log.debug(f"Request {req.request_id}: no prefix match, now READY")
+                    req.llm_request.stats.kvc_hit_type = "none"
 
                 # If we just marked it READY, fall through to process it
                 if req.phase != RequestPhase.READY:
@@ -1303,6 +1373,15 @@ class LLMWorkerVLLMScheduler:
                     break
 
             # Normal prefill case
+
+            full_prompt_blocks = (req.prompt_tokens + self.block_size - 1) // self.block_size
+            resolved_blocks = req.apc_resolved_tokens // self.block_size
+            remaining_prompt_blocks = max(0, full_prompt_blocks - resolved_blocks)
+            if remaining_prompt_blocks > self.free_gpu_blocks and self.scheduler_config.enable_gpu_apc:
+                self._apc_evict_blocks(remaining_prompt_blocks - self.free_gpu_blocks)
+            if remaining_prompt_blocks > self.free_gpu_blocks:
+                break
+
             remaining_budget = self.scheduler_config.max_num_batched_tokens - batch.total_tokens
             ideal_chunk = schedule_prefill_chunk(req, self.scheduler_config)
             tokens_to_add = min(ideal_chunk, remaining_budget)
@@ -1319,10 +1398,9 @@ class LLMWorkerVLLMScheduler:
                 )
                 break
 
-            # Allocate GPU memory
-            if blocks_needed > 0:
-                req.allocated_blocks += blocks_needed
-                self.free_gpu_blocks -= blocks_needed
+            delta = self._apc_admit_tokens(req, tokens_to_add)
+            if delta is None:
+                break
 
             batch.prefill_requests.append(req)
             batch.prefill_tokens += tokens_to_add
@@ -1433,16 +1511,30 @@ class LLMWorkerVLLMScheduler:
         if self.current_batch is None:
             ret_val = self.free_gpu_blocks == self.init_free_blocks
         else:
-            # now we have a dynamic setting
-            active_used = sum([r.allocated_blocks for r in (self.running_requests + self.completed_requests)])
-            # because a waiting request might have kvc committed
-            kvc_committed = sum([r.allocated_blocks for r in (self.waiting_requests)])
-            total_used = active_used + kvc_committed
-            self.log.debug(
-                f"active_used: {active_used}, kvc_committed: {kvc_committed}, kvc_fetch_blocks_in_flight: {self.kvc_fetch_blocks_in_flight}, total_used: {total_used}, gpu_free: {self.free_gpu_blocks} | condition = {self.init_free_blocks == self.free_gpu_blocks + total_used}"
-            )
+            if not self.scheduler_config.enable_gpu_apc:
+                # now we have a dynamic setting
+                active_used = sum([r.allocated_blocks for r in (self.running_requests + self.completed_requests)])
+                # because a waiting request might have kvc committed
+                kvc_committed = sum([r.allocated_blocks for r in (self.waiting_requests)])
+                total_used = active_used + kvc_committed
+                self.log.debug(
+                    f"active_used: {active_used}, kvc_committed: {kvc_committed}, kvc_fetch_blocks_in_flight: {self.kvc_fetch_blocks_in_flight}, total_used: {total_used}, gpu_free: {self.free_gpu_blocks} | condition = {self.init_free_blocks == self.free_gpu_blocks + total_used}"
+                )
 
-            ret_val = self.init_free_blocks == self.free_gpu_blocks + total_used
+                ret_val = self.init_free_blocks == self.free_gpu_blocks + total_used
+            else:
+                # Sharing-aware invariant
+                ret_val = self.init_free_blocks == self.free_gpu_blocks + self._apc.resident + private_total
+                self.log.debug(
+                    f"apc_resident: {self._apc.resident}, apc_private: {private_total}, "
+                    f"gpu_free: {self.free_gpu_blocks} | condition = {ret_val}"
+                )
+                if not ret_val:
+                    self.log.debug(
+                        f"APC invariant violated: free_gpu_blocks({self.free_gpu_blocks}) + "
+                        f"len(policy)({self._apc.resident}) + private({private_total}) != "
+                        f"init_free_blocks({self.init_free_blocks})"
+                    )
 
         if ret_val == False:
             # We will abort, print the current state for debugging
