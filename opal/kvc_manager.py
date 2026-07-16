@@ -540,7 +540,7 @@ class OpalStorageBackend:
         # insert the object in the index
         self._index[key] = memory_obj
         # allocate KVCache event here and return it
-        e = KVCEvent(self.worker_id, hash(key), -1, self.tier_index, KVCEventType.INSERT)
+        e = KVCEvent(self.worker_id, hash(key), -1, self.tier_index, KVCEventType.INSERT, self.tier_name)
         return e
 
     def batched_put_callback(self, future: Future, keys: List[OpalCacheEngineKey]):
@@ -931,7 +931,7 @@ class OpalKVCacheEngine:
         tokens: list[int],
         max_fetch: Optional[int] = None,
         **kwargs,
-    ) -> Generator[simpy.Event, None, np.ndarray]:
+    ) -> Generator[simpy.Event, None, Tuple[np.ndarray, List[str]]]:
         """Retrieve the KV caches from the cache engine. And put the retrieved
         KV cache to the serving engine via the GPU connector.
 
@@ -942,8 +942,10 @@ class OpalKVCacheEngine:
         and before retrieve() is called there are whole more new tokens generated
         that can be matched. In that case the GPU memory is over-committed badly.
 
-        :return: the boolean mask indicating which tokens are retrieved. The
-            length of the mask should be the same as the tokens. On CPU.
+        :return: A tuple of (mask, tier_names_used) where mask is a boolean
+            array indicating which tokens were retrieved, and tier_names_used is
+            a list of storage tier names (e.g. ["CPUMemory"]) that were read.
+            Returns (mask, []) when storage is empty/unconfigured.
 
         :raises: ValueError if the number of Falses in the mask is not a
             multiple of the chunk size.
@@ -962,7 +964,7 @@ class OpalKVCacheEngine:
         if self.storage_manager.cannot_store():
             # check if we are full or empty, then no need to do useless work
             yield self.opal_env.simpy_env.timeout(0.0001)
-            return ret_mask
+            return ret_mask, []
 
         start_time = self.opal_env.simpy_env.now
         chunk_infos = []
@@ -1010,7 +1012,7 @@ class OpalKVCacheEngine:
             onload_time_sec * 1000,
             tot_kv_size / onload_time_sec / 1024**3 if onload_time_sec > 0 else 0,
         )
-        return ret_mask
+        return ret_mask, list(block_mapping.keys())
 
     def lookup(
         self,

@@ -31,6 +31,7 @@ class StageStatistics:
         self.per_unit_req_done = []
         self.per_unit_workers = []
         self.per_unit_gpu_utilization = []
+        self.kvc_tier_hits: dict[str, int] = {}
         while val < max_bin:
             self.bins.append(val)
             val *= 2
@@ -63,6 +64,7 @@ class StageStatistics:
             "stage_time_start": self.stage_time_start,
             "stage_time_end": self.stage_time_end,
             "input_output_tokens_sz": self.input_output_tokens_sz,
+            "kvc_tier_hits": self.kvc_tier_hits,
         }
 
     @classmethod
@@ -85,6 +87,7 @@ class StageStatistics:
         obj.per_unit_gpu_utilization = data["per_unit_gpu_utilization"]
         obj.stage_time_end = data["stage_time_end"]
         obj.stage_time_start = data["stage_time_start"]
+        obj.kvc_tier_hits = data.get("kvc_tier_hits", {})
 
         # convert list -> numpy array
         obj.latencies = np.array(data["latencies"], dtype=float)
@@ -200,6 +203,11 @@ class StageStatistics:
         # self.debug_val.append(stats.start_gpu_time - stats.end_kvc_time)
         self.raw_decode_values.append(stats.get_decode_times_including_ttft())
         self.input_output_tokens_sz.append((request.input_length, request.output_length))
+        if stats.get_prefix_hit_tokens() > 0:
+            tier = stats.get_kvc_hit_tier() or "unknown"
+            self.kvc_tier_hits[tier] = self.kvc_tier_hits.get(tier, 0) + 1
+        else:
+            self.kvc_tier_hits["Cache Miss"] = self.kvc_tier_hits.get("Cache Miss", 0) + 1
 
     def add_total_time_in_system(self, breakdown: dict[str, float]):
         """Add a new request latency -- the total time it has spent in the system = routing + queuing + KVC + GPU"""
@@ -436,6 +444,16 @@ class StageStatistics:
             "Mean ITL (ms)": mean_ITL,
             "Median ITL (ms)": median_ITL,
             "P99 ITL (ms)": P99_ITL,
-            "*--------------------------------------------------": None,
+            "---------------KV Cache Hit Breakdown--------------": None,
         }
+        # Inject per-tier hit counts and percentages; Cache Miss and unknown printed last
+        total_finished = max(successful_requests, 1)
+        tier_order = [k for k in self.kvc_tier_hits if k not in ("Cache Miss", "unknown")]
+        tier_order += [k for k in ("Cache Miss", "unknown") if k in self.kvc_tier_hits]
+        for tier in tier_order:
+            count = self.kvc_tier_hits[tier]
+            pct = count * 100.0 / total_finished
+            final_stats[f"{tier} (requests)"] = float(count)
+            final_stats[f"{tier} (%)"] = pct
+        final_stats["*--------------------------------------------------"] = None
         self.__print(final_stats)

@@ -1500,7 +1500,7 @@ class LLMWorkerVLLMScheduler:
         # self.log.debug(f"Starting async KVC retrieve for request {req.request_id}")
 
         # Retrieve the KV cache (this yields and simulates the move time)
-        moved_tensors = yield safe_process(self.simpy_env, self._kvc_manager.retrieve(req.hash_ids, num_prefix_tokens))
+        moved_tensors, tier_names_used = yield safe_process(self.simpy_env, self._kvc_manager.retrieve(req.hash_ids, num_prefix_tokens))
         """
         Original:     [T, T, T, F, F, F]
         Inverted:     [F, F, F, T, T, T]
@@ -1570,6 +1570,8 @@ class LLMWorkerVLLMScheduler:
         # Transition to READY state
         req.kvc_fetch_in_progress = False
         req.llm_request.stats.set_prefix_hit_tokens(actual_retrieved_tokens)
+        if tier_names_used:
+            req.llm_request.stats.set_kvc_hit_tier(tier_names_used[0])
 
         req.phase = RequestPhase.READY
         req.llm_request.stats._4_request_ready_time = self.simpy_env.now

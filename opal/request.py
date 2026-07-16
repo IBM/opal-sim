@@ -29,6 +29,7 @@ class LLMRequestStats:
 
         self.__scheduler_timestamps = []
         self.__kvc_hit_tokens = 0
+        self.__kvc_hit_tier: str = ""
         # min what is needed is one
         self.__num_prefill_sched_steps = 0
 
@@ -57,6 +58,12 @@ class LLMRequestStats:
 
     def get_prefix_hit_tokens(self):
         return self.__kvc_hit_tokens
+
+    def set_kvc_hit_tier(self, tier_name: str):
+        self.__kvc_hit_tier = tier_name
+
+    def get_kvc_hit_tier(self) -> str:
+        return self.__kvc_hit_tier
 
     def get_scheduler_steps(self):
         return len(self.__scheduler_timestamps)

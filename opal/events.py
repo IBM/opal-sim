@@ -25,6 +25,8 @@ class KVCEvent(OpalInfraEvent):
     src_tier: int
     dst_tier: int
     eventType: KVCEventType
+    tier_name: str = ""      # destination tier name (INSERT, MOVE, COPY)
+    src_tier_name: str = ""  # source tier name (DELETE, MOVE)
 
 
 @dataclass

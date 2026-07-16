@@ -13,28 +13,43 @@ class OpalWorkerState:
         self.name = f"KVBM-WState.{id}"
         # Setup logger
         self.log = logging.getLogger(self.name)
-        self._prefix_set = set()
+        # Maps chunk_hash -> set of tier names the chunk currently lives in
+        self._chunk_tier: dict[int, set[str]] = {}
 
     def process_kvc_event(self, event: KVCEvent):
-        hashes = event.chunk_hash
+        chunk_hash = event.chunk_hash
         if event.eventType == KVCEventType.INSERT:
-            self._prefix_set.add(hashes)
+            self._chunk_tier.setdefault(chunk_hash, set()).add(event.tier_name)
+        elif event.eventType == KVCEventType.DELETE:
+            if chunk_hash in self._chunk_tier:
+                self._chunk_tier[chunk_hash].discard(event.src_tier_name)
+                if not self._chunk_tier[chunk_hash]:
+                    del self._chunk_tier[chunk_hash]
+        elif event.eventType == KVCEventType.MOVE:
+            tiers = self._chunk_tier.setdefault(chunk_hash, set())
+            tiers.discard(event.src_tier_name)
+            tiers.add(event.tier_name)
+            if not tiers:
+                del self._chunk_tier[chunk_hash]
+        elif event.eventType == KVCEventType.COPY:
+            self._chunk_tier.setdefault(chunk_hash, set()).add(event.tier_name)
         else:
-            raise Exception()
+            raise Exception(f"Unknown KVCEventType: {event.eventType}")
 
     def process_system_event(self, sys_event: SystemEvent):
         # FIXME: we will implement the running avg. etc later, for now we are
         # only keeping track of the last update window
         self._last_sys_update = sys_event
 
-    def match_prompt(self, hashes: list[int]):
-        matched_hashes = []
+    def match_prompt(self, hashes: list[int]) -> list[tuple[int, set[str]]]:
+        """Return matched (hash, tier_set) pairs by prefix, stopping at first miss."""
+        matched = []
         for h in hashes:
-            if h in self._prefix_set:
-                matched_hashes.append(h)
+            if h in self._chunk_tier:
+                matched.append((h, self._chunk_tier[h]))
             else:
                 break
-        return matched_hashes
+        return matched
 
 
 class KVBM:
@@ -79,11 +94,17 @@ class KVBM:
 
             # Update reverse index: chunk_hash -> worker_ids
             # This enables fast lookup of which workers have a specific chunk
+            chunk_hash = ex.chunk_hash
             if ex.eventType == KVCEventType.INSERT:
-                chunk_hash = ex.chunk_hash
                 if chunk_hash not in self._chunk_to_workers:
                     self._chunk_to_workers[chunk_hash] = set()
                 self._chunk_to_workers[chunk_hash].add(ex.worker_id)
+            elif ex.eventType == KVCEventType.DELETE:
+                if chunk_hash in self._chunk_to_workers:
+                    self._chunk_to_workers[chunk_hash].discard(ex.worker_id)
+                    if not self._chunk_to_workers[chunk_hash]:
+                        del self._chunk_to_workers[chunk_hash]
+            # MOVE and COPY: worker still holds the chunk, no change to reverse index
 
     def process_system_events(self, events: list[SystemEvent]):
         # self.log.debug(f"processing **systems** event, len = {len(events)} events")
@@ -129,7 +150,7 @@ class KVBM:
         score = {}
         for worker_id in candidate_workers:
             w = self._worker_state[worker_id]
-            matched_chunks = len(w.match_prompt(chunk_hashes))
-            score[worker_id] = matched_chunks / len(chunk_hashes)
+            matched = w.match_prompt(chunk_hashes)
+            score[worker_id] = len(matched) / len(chunk_hashes)
 
         return score
