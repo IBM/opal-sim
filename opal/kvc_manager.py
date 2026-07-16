@@ -473,10 +473,45 @@ class OpalStorageBackend:
         self.tier_name = tier_name
         self.tier_index = tier_index
         self.log = logging.getLogger(str(self))
-        # this is the hash table index that is being maintained
-        self._index = {}
+        # this is the hash table index that is being maintained.
+        self._index: "OrderedDict[OpalCacheEngineKey, OpalMemoryObj]" = OrderedDict()
+        # Running total of obj.tokens over self._index, kept in sync by
+        self._tokens_stored: int = 0
+        # Keys that must not be evicted: items being fetched (pinned by get_blocking)
+        # or being migrated to next_backend (pinned by evict_async/_migrate_to_next).
+        self._pinned: set["OpalCacheEngineKey"] = set()
+        # Pointer to the next (lower/slower) storage tier; None for the last tier.
+        # Wired up by OpalStorageManager.__init__ after all backends are created.
+        self.next_backend: Optional["OpalStorageBackend"] = None
+        # Fraction of capacity at which the background monitor triggers async eviction.
+        self.eviction_threshold: float = (
+            opal_config["kvc"].get(tier_name, {}).get("eviction_threshold", 1.0)
+        )
         # this is the performance model device
         self.backend_device = device
+
+    def _index_insert(self, key: "OpalCacheEngineKey", memory_obj: "OpalMemoryObj") -> None:
+        """Insert/overwrite an entry in self._index, keeping _tokens_stored in sync."""
+        old = self._index.get(key)
+        if old is not None:
+            self._tokens_stored -= old.tokens
+            # The caller unconditionally reserved capacity for `memory_obj`
+            # (capacity_remaining_bytes -= memory_obj.size) before this insert.
+            # On an overwrite the old object's bytes would otherwise be orphaned
+            # (charged twice, freed once), leaking capacity. Restore them here so
+            # the tier's capacity_remaining_bytes stays consistent with the index.
+            self.backend_device.capacity_remaining_bytes += old.get_size()
+        self._index[key] = memory_obj
+        self._tokens_stored += memory_obj.tokens
+
+    def _index_pop(
+        self, key: "OpalCacheEngineKey", default: Optional["OpalMemoryObj"] = None
+    ) -> Optional["OpalMemoryObj"]:
+        """Pop an entry from self._index, keeping _tokens_stored in sync."""
+        obj = self._index.pop(key, default)
+        if obj is not None:
+            self._tokens_stored -= obj.tokens
+        return obj
 
     def __str__(self):
         return f"{__class__.__name__}.{self.worker_id}.{self.tier_name}"
@@ -542,8 +577,11 @@ class OpalStorageBackend:
         self.backend_device.process_one_request(r)
         # wait for completion
         yield r.event
-        # insert the object in the index
-        self._index[key] = memory_obj
+        # insert the object in the index. Use _index_insert (not a raw assignment)
+        # so _tokens_stored stays in sync and an overwrite refunds the old object's
+        # bytes -- concurrent stores of the same key otherwise leak capacity and
+        # leave _tokens_stored stuck at 0.
+        self._index_insert(key, memory_obj)
         # allocate KVCache event here and return it
         e = KVCEvent(self.worker_id, hash(key), -1, self.tier_index, KVCEventType.INSERT)
         return e
@@ -620,6 +658,92 @@ class OpalStorageBackend:
 
     def close(self):
         raise NotImplementedError
+    
+    def evict_sync(self, bytes_needed: int) -> int:
+        """Synchronous drop: immediately remove unpinned LRU items to free
+        ``bytes_needed`` bytes on this tier.  No I/O, no migration — dropped
+        items are permanently lost.  Called from evict_and_cascade() and
+        _migrate_to_next() to make room at the destination tier before writing.
+
+        Returns the number of bytes actually freed."""
+        need = bytes_needed - self.backend_device.capacity_remaining_bytes
+        if need <= 0:
+            return 0
+        # Collect candidates in LRU order (front of OrderedDict), skipping pinned.
+        to_drop: List[OpalCacheEngineKey] = []
+        for key in self._index:
+            if need <= 0:
+                break
+            if key not in self._pinned:
+                to_drop.append(key)
+                need -= self._index[key].size
+        freed = 0
+        for key in to_drop:
+            obj = self._index_pop(key, None)
+            if obj is not None:
+                self.backend_device.capacity_remaining_bytes += obj.size
+                freed += obj.size
+        if to_drop:
+            self.log.debug(
+                f"[SYNC-DROP] {self.tier_name}: dropped {len(to_drop)} chunk(s) "
+                f"({freed / 2**20:.2f} MB); "
+                f"free now {self.backend_device.capacity_remaining_bytes / 2**20:.2f} MB"
+            )
+        return freed
+
+    def evict_and_cascade(
+        self, bytes_needed: int
+    ) -> Generator[simpy.Event, None, int]:
+        """Like evict_sync() but writes evicted items to next_backend before
+        removing them from this tier.  Items on the last tier (no next_backend)
+        are dropped as usual.
+
+        This is a generator because writing to the next tier requires I/O yields.
+        Called from batched_put() so that LRU items displaced by new writes are
+        preserved in the tier below rather than silently lost."""
+        need = bytes_needed - self.backend_device.capacity_remaining_bytes
+        if need <= 0:
+            return 0
+        to_evict: List[OpalCacheEngineKey] = []
+        for key in self._index:
+            if need <= 0:
+                break
+            if key not in self._pinned:
+                to_evict.append(key)
+                need -= self._index[key].size
+        freed = 0
+        dropped = 0
+        cascaded = 0
+        for key in to_evict:
+            obj = self._index_pop(key, None)
+            if obj is None:
+                continue
+            self.backend_device.capacity_remaining_bytes += obj.size
+            freed += obj.size
+            nb = self.next_backend
+            if nb is not None:
+                if obj.size > nb.backend_device.capacity_remaining_bytes:
+                    nb.evict_sync(obj.size)
+                if obj.size <= nb.backend_device.capacity_remaining_bytes:
+                    nb.backend_device.capacity_remaining_bytes -= obj.size
+                    yield from nb.submit_put_task(key, obj)
+                    cascaded += 1
+                else:
+                    dropped += 1
+            else:
+                dropped += 1
+        if dropped > 0:
+            self.log.debug(
+                f"[KVC Mgr] [{self.tier_name}] [DROP] : "
+                f"dropped {dropped} chunk(s) ({freed / 2**20:.2f} MB). "
+                f"Free space {self.backend_device.capacity_remaining_bytes / 2**20:.2f} MB."
+            )
+        if cascaded > 0:
+            self.log.debug(
+                f"[KVC Mgr] [{self.tier_name}] [EVICT] : "
+                f"evict cascaded {cascaded} chunk(s)"
+            )
+        return freed
 
 
 # Generator[YieldType, SendType, ReturnType]
@@ -660,6 +784,13 @@ class OpalStorageManager:
             backend = OpalStorageBackend(opal_env, opal_config, store, self.worker_id, i, b)
             self.storage_backends[b] = backend
             self.log.debug(f'initialized "{b}" backend')
+
+        # Wire singly-linked next_backend pointers so evict_and_cascade
+        # can push items down the tier hierarchy without knowing about the manager.
+        backend_list = list(self.storage_backends.values())
+        for i in range(len(backend_list) - 1):
+            backend_list[i].next_backend = backend_list[i + 1]
+
 
     def cannot_store(self) -> bool:
         return len(self.storage_backends) == 0
@@ -709,6 +840,18 @@ class OpalStorageManager:
             keys = keys[stored_so_far:]
             memory_objs = memory_objs[stored_so_far:]
             chunk_per_tier[backend_name] = stored_so_far, new_stored
+        # [KVC Store] write-side visibility: shows keys actually landing in each
+        # tier (new vs already-present) and the tier's running index size, so it
+        # is easy to confirm whether anything is ever written to CPU/DFS.
+        for tier_name, (total, new) in chunk_per_tier.items():
+            if total == 0:
+                continue
+            be = self.storage_backends[tier_name]
+            self.log.info(
+                f"[KVC Store] worker.{self.worker_id} | tier {tier_name} | "
+                f"+{new} new keys (matched {total - new} already-present) | "
+                f"tier now holds {len(be._index)} keys / {be._tokens_stored} tokens"
+            )
         # FIXME: generate these KVCache events
         worker: "LLMWorkerSingleStage" = self.opal_env.registry.get_worker(self.worker_id)
         worker.append_kvc_events(kvc_events)

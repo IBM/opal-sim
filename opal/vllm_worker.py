@@ -411,7 +411,9 @@ class LLMWorkerVLLMScheduler:
         model_params = self.model_config.model_params
         model_size_bytes = model_params * 2
 
-        free_memory_bytes = total_gpu_memory_bytes - model_size_bytes
+        # Reserve headroom for activations/scratch (mirrors vLLM's gpu_memory_utilization knob)
+        gpu_memory_utilization = self.opalConfig["worker"]["vllm_params"].get("gpu_memory_utilization", 0.9)
+        free_memory_bytes = int((total_gpu_memory_bytes - model_size_bytes) * gpu_memory_utilization)   
         block_size_bytes = self.block_size * self.model_config.key_value_bytes
 
         self.total_gpu_blocks = int(free_memory_bytes // block_size_bytes)
@@ -441,6 +443,7 @@ class LLMWorkerVLLMScheduler:
             f"per_gpu_memory={gpu_memory_gb}GB, "
             f"total_memory={gpu_memory_gb * tp_degree}GB, "
             f"model_size={model_size_bytes / 1024**3:.2f}GB, "
+            f"gpu_memory_utilization={gpu_memory_utilization}, "
             f"free_memory={free_memory_bytes / 1024**3:.2f}GB, "
             f"block_size={self.block_size} tokens, "
             f"block_size_bytes={block_size_bytes / 1024:.2f}KB, "
@@ -525,6 +528,49 @@ class LLMWorkerVLLMScheduler:
             def _store(h_ids):
                 yield from self._kvc_manager.store(h_ids)
             self.simpy_env.process(_store(hash_ids_ref[:end_idx]))
+        if freed > 0:
+            tier = self.opalConfig["kvc"]["kvc_tiers"][0]
+            dest = {"CPUMemory": "CPU DRAM", "LocalNVMe": "local NVMe",
+                    "DistributedFS": "distributed FS"}.get(tier, tier)
+            self.log.info(
+                f"[APC Evict] worker.{self.id} | freed {freed} blocks from HBM "
+                f"and moved to {dest} | sourced={len(store_sources)}/{freed} blocks "
+                f"had a write-through source -> {len(pending_stores)} prefix store(s)"
+            )
+        self._log_apc_occupancy()
+        return freed
+
+    def _log_apc_occupancy(self) -> None:
+        """Snapshot of GPU APC block occupancy (full/idle/pinned/empty)."""
+        if not self.scheduler_config.enable_gpu_apc:
+            return
+        self.log.debug(
+            f"[APC Blocks] worker.{self.id} | "
+            f"full(APC-resident)={self._apc.resident} "
+            f"(evictable/idle={self._apc.evictable_count()}, "
+            f"pinned/in-use={self._apc.resident - self._apc.evictable_count()}) | "
+            f"empty(free)={self.free_gpu_blocks} / total={self.total_gpu_blocks}"
+        )
+
+    def _release_request_blocks(self, request) -> int:
+        """Return a request's GPU blocks to the free pool at retirement/preemption.
+
+        APC-aware: registered (shared) APC blocks are decref'd and stay resident
+        (available for prefix reuse, evictable once their refcount hits zero), so
+        only the request's private/unregistered blocks are actually freed here --
+        freeing the registered ones too would double-count them (they still hold
+        HBM) and break `free + resident == total`. release() also resets the
+        request's APC bookkeeping (owned hashes, resolved tokens, chain hash), so
+        a preempted request re-enters lookup with clean state.
+
+        With APC off, there are no shared blocks: free the request's full
+        allocation. Returns the number of blocks returned to free_gpu_blocks."""
+        if self.scheduler_config.enable_gpu_apc:
+            freed = self._apc.release(request)
+        else:
+            freed = request.allocated_blocks
+        self.free_gpu_blocks += freed
+        request.allocated_blocks = 0
         return freed
 
     def _select_preemption_candidate(self, requests: List[VLLMSchedulerRequest]) -> Optional[VLLMSchedulerRequest]:
@@ -606,15 +652,16 @@ class LLMWorkerVLLMScheduler:
             return False
 
         # Preempt the candidate
-        blocks_to_free = candidate.allocated_blocks
-
-        if blocks_to_free == 0:
+        if candidate.allocated_blocks == 0:
             self.log.warning(f"Request {candidate.request_id} selected for preemption but has 0 allocated blocks")
             return False
 
-        # Free GPU blocks
-        self.free_gpu_blocks += blocks_to_free
-        candidate.allocated_blocks = 0
+        # Free GPU blocks. Under APC, release() only returns the candidate's
+        # private blocks; its shared blocks are decref'd and become evictable, so
+        # reclaim enough of them (write-through to CPU) to cover blocks_needed.
+        blocks_to_free = self._release_request_blocks(candidate)
+        if self.scheduler_config.enable_gpu_apc and blocks_to_free < blocks_needed:
+            blocks_to_free += self._apc_evict_blocks(blocks_needed - blocks_to_free)
 
         # Store progress before reset for logging
         old_phase = candidate.phase
@@ -691,6 +738,7 @@ class LLMWorkerVLLMScheduler:
         # Then start request checker which may interrupt the scheduler
         self._check_new_request_process = self.simpy_env.process(self._check_new_requests())
         self.simpy_env.process(self._periodic_kvc_updates())
+        self.simpy_env.process(self._hbm_eviction_monitor())
 
     def __str__(self):
         return f"{__class__.__name__}.{self.id}"
@@ -725,6 +773,48 @@ class LLMWorkerVLLMScheduler:
                 gpu_utilization=gpu_utilization,
             )
             self.simpy_env.process(router.queue_events([sys_event]))
+    
+    def _hbm_eviction_monitor(self):
+        """Background process: proactively drain GPU APC blocks to CPU DRAM
+        when HBM utilization exceeds hbm_eviction_threshold.
+
+        _apc_evict_blocks() already fires a background store() for each evicted
+        block (write-through to the KVC tier), so this simply triggers that
+        existing path earlier — no changes to _apc_evict_blocks() needed."""
+        vllm_params = self.opalConfig["worker"]["vllm_params"]
+        hbm_threshold: float = vllm_params.get("hbm_eviction_threshold", 0.9)
+        base_interval: float = vllm_params.get("apc_eviction_check_interval_sec", 1.0)
+        interval = base_interval
+        while not self.opalEnv.are_we_done():
+            yield self.simpy_env.timeout(interval)
+            self._log_apc_occupancy()
+            idle_blocks = self._apc.evictable_count()
+            if not self.scheduler_config.enable_gpu_apc or idle_blocks == 0:
+                interval = base_interval
+                continue
+            # Use non-active GPU capacity (idle APC + free) as denominator, not
+            # total_gpu_blocks.  Active request blocks inflate total_gpu_blocks
+            # so APC appears small even when it dominates available capacity.
+            available_for_apc = self.free_gpu_blocks + idle_blocks
+            if available_for_apc == 0:
+                interval = base_interval
+                continue
+            apc_util = idle_blocks / available_for_apc
+            if apc_util > hbm_threshold:
+                excess_blocks = max(1, int((apc_util - hbm_threshold) * available_for_apc))
+                evicted = self._apc_evict_blocks(excess_blocks)
+                if evicted:
+                    freed_mb = evicted * self.block_size * self.model_config.key_value_bytes / 2**20
+                    self.log.info(
+                        f"[APC] [Evict] Memory util={apc_util:.1%} (of non-active GPU) "
+                        f"> eviction threshold={hbm_threshold:.1%}. "
+                        f"Proactively migrated {evicted} block(s) ({freed_mb:.1f} MB) to CPU DRAM"
+                    )
+            # Scale next check interval by deviation above threshold.
+            # At or below threshold deviation=0 → full base_interval.
+            # At 100% utilization deviation=1 → minimum 0.1 s.
+            deviation = max(0.0, (apc_util - hbm_threshold) / max(0.01, 1.0 - hbm_threshold))
+            interval = max(0.1, base_interval * (1.0 - deviation))
 
     def _vllm_scheduling_loop(self):
         """
@@ -1154,13 +1244,10 @@ class LLMWorkerVLLMScheduler:
             if req in batch.decode_requests:
                 batch.decode_requests.remove(req)
 
-            # Free GPU blocks
-            if req.allocated_blocks > 0:
-                self.free_gpu_blocks += req.allocated_blocks
-                blocks_freed = req.allocated_blocks
-                req.allocated_blocks = 0
-            else:
-                blocks_freed = 0
+            # Free GPU blocks (APC-aware: shared blocks stay resident/evictable,
+            # only private blocks are freed; also resets the request's APC state).
+            # Always release so an APC-hit request's shared-block refs are decref'd.
+            blocks_freed = self._release_request_blocks(req)
 
             # Store progress for logging
             old_phase = req.phase
@@ -1659,6 +1746,19 @@ class LLMWorkerVLLMScheduler:
             assert False  # This should never happen
             self.kvc_fetch_blocks_in_flight = 0
 
+        # Register the just-fetched blocks into the GPU APC so they're discoverable
+        # by later requests, get a block_source (=> written through on eviction), and
+        # advance apc_resolved_tokens so the follow-on prefill prices from the right
+        # cursor instead of re-pricing from token 0.
+        if self.scheduler_config.enable_gpu_apc and actual_retrieved_tokens > 0:
+            full_blocks = actual_retrieved_tokens // self.block_size
+            dups = self._apc.settle(req, full_blocks)  # blocks already cached elsewhere
+            # our fetched copies of already-cached blocks are redundant -> hand them back
+            self.free_gpu_blocks += dups
+            req.allocated_blocks -= dups
+            # any trailing partial (< block_size) block stays this request's private block
+            req.apc_private_blocks += (actual_kvc_blocks - full_blocks)
+
         # Transition to READY state
         req.kvc_fetch_in_progress = False
         req.llm_request.stats.set_prefix_hit_tokens(actual_retrieved_tokens)
@@ -1808,15 +1908,18 @@ class LLMWorkerVLLMScheduler:
         for request in requests_to_handle:
             self.log.debug(f"Storing KVC for request {request.request_id} " f"({len(request.hash_ids)} tokens)")
             # Store KVC data (this can take time but doesn't need GPU memory)
-            yield safe_process(self.simpy_env, self._kvc_manager.store(request.hash_ids))
+            if not self.scheduler_config.enable_gpu_apc:
+                yield safe_process(self.simpy_env, self._kvc_manager.store(request.hash_ids))
 
-            if request.allocated_blocks > 0:
-                self.free_gpu_blocks += request.allocated_blocks
+            # Always release (even when allocated_blocks == 0): an APC-hit request
+            # holds shared-block refs that must be decref'd or they leak (blocks
+            # stay pinned forever and can never be evicted).
+            freed = self._release_request_blocks(request)
+            if freed > 0:
                 self.log.debug(
-                    f"Request {request.request_id}: released {request.allocated_blocks} blocks after saving KVC store, "
+                    f"Request {request.request_id}: released {freed} blocks after saving KVC store, "
                     f"free_blocks={self.free_gpu_blocks}/{self.total_gpu_blocks}"
                 )
-                request.allocated_blocks = 0
 
             yield self.router_output_finished_req_queue.put(request.llm_request)
 
