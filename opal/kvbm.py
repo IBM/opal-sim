@@ -13,7 +13,7 @@ class OpalWorkerState:
         self.name = f"KVBM-WState.{id}"
         # Setup logger
         self.log = logging.getLogger(self.name)
-        # Maps chunk_hash -> set of tier names the chunk currently lives in
+        # Maps chunk_hash to the set of tier names the chunk currently lives in
         self._chunk_tier: dict[int, set[str]] = {}
 
     def process_kvc_event(self, event: KVCEvent):
