@@ -49,6 +49,12 @@ class AbstractWorkload:
         self.log.debug(
             f"queuing to the result queue {request}, current queue length {len(self._router_response_queue.items)}"
         )
+        # This runs only from the router's completion collection, so reaching here means
+        # the turn is actually finished. A producer that submitted this turn may be parked
+        # on `yield request.has_completed`, waiting to learn the turn is over before sending
+        # the next one; mark_completed() is what tells it, so it doesn't stay stuck. Firing
+        # it here (the one point that knows the turn ended) is what makes that signal correct.
+        request.mark_completed()
         yield self._router_response_queue.put(request)
 
     def _process_responses(self):

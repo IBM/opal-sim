@@ -1,0 +1,117 @@
+{
+  "simulation": {
+    "simulation_time": -1.0,
+    "seed": 42,     
+    "num_workers": 1,
+    "save_simulation_data": true,
+    "show_progress": false  
+  },
+
+  "model":{
+    "model_params":{
+      "name": "granite-3.3-8b-instruct", 
+      "config_dir": "./model-configs/"
+    }
+  },
+
+  "router": {
+    "router_params": {
+      "enable_scaling": false,
+      "max_queue_threshold": 4, 
+      "scale_latency": 40,
+      "max_workers": 50,
+      "policy": "MaxPrefix", 
+      "periodic_infra_update_collection_time": 30, 
+      "max_event_batch_size": 64 
+    }
+  },
+  
+  "workload" : {
+    "stages": [{
+      "type" : "UniformReqRate",
+      "workload_params": {
+        "request_rate": 2.0, 
+        "total_requests": 100,
+        "prompt_size_min": 32, 
+        "prompt_size_max": 16384, 
+        "default_prefix_length": 1024, 
+        "jitter": 0.0,
+        "output_tokens_min": 32, 
+        "output_tokens_max": 128          
+      }
+    },
+    {
+      "type": "otel",
+      "workload_params": {
+        "trace_file": "traces/synthetic_otel_traces.jsonl",
+        "tokenizer": "meta-llama/Llama-3.1-8B-Instruct",
+        "pretokenized": false,
+        "total_requests": 5,
+        "multiplier_to_sec": 1,
+        "inter_turn_multiplier": 1,
+        "max_concurrent_sessions": 2
+      }
+    }
+    ]
+  },
+
+  "worker" : {
+
+    "worker_params":{      
+      "worker_local_queue_capacity": 1,      
+      "periodic_infra_update_time": 30, 
+      "kvcevent_coalesce_time": 30
+    }, 
+
+    "hw":{
+      "gpu": "H100",
+      "memory_gb": 80, 
+      "tflops": 989.5,
+      "mem_bw_TBps" : 3.3, 
+      "tp": 1   
+    },
+
+    "vllm_params": {
+      "max_num_seqs": 256,
+      "max_num_batched_tokens": 8192,
+      "max_kvc_ready_requests": 8,
+      "chunked_prefill": true,
+      "block_size": 16
+    },
+
+   "inference_params":{
+        "model": "roofline",
+        "mean_latency_secs": 1.0,
+        "a" : "4", 
+        "b" : "24" 
+    }
+  },
+  
+  "kvc":{    
+    "kvc_tiers": ["CPUMemory"], 
+    
+    "chunk_size": 256,
+    "save_unfull_chunk": true, 
+    
+    "CPUMemory": {
+      "bandwidth_GBps": 50,
+      "latency_nsec": 200, 
+      "concurrency": 1000000,
+      "capacity_GB": 8
+    },
+
+    "LocalNVMe": {
+      "bandwidth_GBps": 10,
+      "latency_nsec": 10000, 
+      "concurrency": 1000,
+      "capacity_GB": 1024
+    },
+    
+    "DistributedFS": {
+      "bandwidth_GBps": 100,
+      "latency_nsec": 100000, 
+      "concurrency": 1000,
+      "capacity_GB": 1048576
+    }
+  }
+}

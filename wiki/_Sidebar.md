@@ -3,6 +3,7 @@
 * [[Running]] 
 * [[Configuration Simulation]]
 * [[Running Workloads]]
+* [[OTel Trace Replay]]
 * [[Examples]]
 * Code Commentary 
   * [[Simpy Basics]] 

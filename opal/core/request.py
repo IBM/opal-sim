@@ -102,13 +102,14 @@ class LLMRequestStats:
         return self._7_decode_done_time - self._2b_worker_time
 
     def get_gpu_time(self):
-        # Span from first to last scheduler timestamp: covers all prefill + decode steps.
+        # start end difference is the GPU time (it includes the scheduling overheads)
+        # TODO: may be we can do better
         return self.__scheduler_timestamps[-1] - self.__scheduler_timestamps[0]
 
 
 class LLMRequest:
     _id_counter = itertools.count()
-    __slots__ = ("id", "env", "stage_id", "worker_id", "input_length", "output_length", "hash_ids", "stats")
+    __slots__ = ("id", "env", "stage_id", "worker_id", "input_length", "output_length", "hash_ids", "output_token_ids", "stats", "session_id", "span_id", "trace_id", "has_completed")
 
     """Represents a request with an ID and timing information."""
 
@@ -120,8 +121,25 @@ class LLMRequest:
         self.input_length = input_length
         self.output_length = output_length
         self.hash_ids = hash_ids
+        self.output_token_ids: list[int] | None = None
+        self.session_id: str | None = None
+        self.span_id: str | None = None
+        self.trace_id: str | None = None
         self.stats = LLMRequestStats()
         self.stats._1_creation_time = self.env.now
+        self.has_completed = self.env.event()
+
+    def mark_completed(self):
+        # Why this is required: a producer that replays turns in order (e.g. an OTel
+        # session) submits turn i, then does `yield request.has_completed` and blocks,
+        # because it must not send turn i+1 until turn i is actually done. Nothing else
+        # tells it the turn finished. `has_completed` is the simpy event it waits on;
+        # firing it here is the signal that unblocks the producer. Without this call the
+        # event is never triggered and that `yield` hangs forever, stalling the session.
+        # The guard keeps it idempotent (simpy raises if an event is succeeded twice), and
+        # the event is owned by this request, so its firing rule lives here, not in callers.
+        if not self.has_completed.triggered:
+            self.has_completed.succeed(self)
 
     def __str__(self):
         return (
