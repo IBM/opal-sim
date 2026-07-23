@@ -1,5 +1,6 @@
 # Opal - A Discrete-event based LLM Inference Platform Simulator in Python
 - [Opal - A Discrete-event based LLM Inference Platform Simulator in Python](#opal---a-discrete-event-based-llm-inference-platform-simulator-in-python)
+  - [What's new](#whats-new)
   - [Overview](#overview)
   - [Dependencies](#dependencies)
     - [Option 1: Using conda (traditional approach)](#option-1-using-conda-traditional-approach)
@@ -8,6 +9,7 @@
   - [What are simulation outputs](#what-are-simulation-outputs)
   - [Logging](#logging)
   - [Configuration](#configuration)
+    - [Config Builder UI](#config-builder-ui)
   - [Development](#development)
     - [Unit Tests](#unit-tests)
   - [Working with `pypy`](#working-with-pypy)
@@ -17,12 +19,17 @@
 - [Contacts / questions](#contacts--questions)
 - [License](#license)
 
+
 <p align="center">
 <figure>
 <img src="./wiki/opal-overview.png" width="33%">
 <figcaption>High-level Opal simulator concept.</figcaption>
 </figure>
 </p>
+
+
+## What's new 
+  * July 23 2026 - Opal now supports replaying Agentic Open-telemetry (Otel) traces. See https://github.com/IBM/opal-sim/wiki/OTel-Trace-Replay 
 
 ## Overview 
 Opal (O.P.A.L. - Open simulator Platform for distributed AI and LLM workflows) is an LLM platform-level simulator written purely in Python. It can be used to explore policies, deployment configurations, optimizations, and what-if scenarios for scalable, distributed inference services like llm-d or Dynamo. It captures the first-level conceptual details of various components involved in servicing an inference request in a distributed setting - workload, router, autoscaler, vLLM worker, distributed KV-cache management, distributed storage, and infrastructure (GPU, DRAM, NVMe storage, network). Furthermore, the simulator can quickly and cheaply explore different configurations and trade-offs in the design of a distributed inference service, quantifying performance (TTFT, ITL, TPOT, GPU utilization etc.), cost ($/token), and energy requirements.
