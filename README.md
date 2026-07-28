@@ -28,7 +28,7 @@
 </p>
 
 
-## What's new
+## What's new 
   * July 23 2026 - Opal now supports replaying Agentic Open-telemetry (Otel) traces. See https://github.com/IBM/opal-sim/wiki/OTel-Trace-Replay 
 
 ## Overview 
