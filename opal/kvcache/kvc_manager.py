@@ -427,6 +427,45 @@ class OpalTokenDatabase(metaclass=abc.ABCMeta):
         # name = inspect.currentframe().f_back.f_code.co_name
         # #traceback.print_stack()
         # print(name, get_hash_cache_stats(), self._count_process_tokens)
+        
+        
+    def process_tokens_from(
+        self,
+        tokens: List[int],
+        start_idx: int,
+        prefix_hash: Optional[int] = None,
+        end_idx: Optional[int] = None,
+        make_key: bool = False,
+        ) -> Iterable[ProcessTokensResult]:
+        """Like process_tokens, but resumes the prefix-hash chain from a known
+        point instead of re-deriving it from index 0 every call.
+
+        start_idx must be chunk_size-aligned and prefix_hash must be the chain
+        value as of start_idx (the third element yielded for the chunk ending
+        at start_idx by a prior call, or None/omitted if start_idx == 0).
+        Only tokens[start_idx:end_idx] are chunked and hashed (end_idx
+        defaults to len(tokens)) -- the caller passes the full backing list
+        plus a range rather than a pre-sliced copy, so this is the only O(new
+        tokens) slice taken, not an additional O(end_idx) one on top. Makes
+        repeated incremental calls over a growing token list O(new tokens)
+        each instead of O(total tokens) -- critical for chunked prefill /
+        decode, which call this once per step over an ever-growing sequence.
+        """
+        assert start_idx % self.chunk_size == 0, f"start_idx {start_idx} not chunk-aligned"
+        if end_idx is None:
+            end_idx = len(tokens)
+        if prefix_hash is None:
+            prefix_hash = self._get_init_hash()
+        chunk_id = start_idx // self.chunk_size
+        for token_chunk in self._chunk_tokens(tokens[start_idx:end_idx]):
+            prefix_hash = self._hash_tokens(token_chunk, prefix_hash)
+            s = chunk_id * self.chunk_size
+            e = min(s + self.chunk_size, end_idx)
+            if make_key:
+                yield s, e, self._make_key_by_hash(prefix_hash)
+            else:
+                yield s, e, prefix_hash
+            chunk_id += 1
 
     def _make_key_by_hash(self, chunk_hash: int):
         return OpalCacheEngineKey(
@@ -874,6 +913,18 @@ class OpalKVCacheEngine:
         self._counter_lookup = 0
         self._counter_lookup_tokens = 0
 
+        # CPU->GPU link for copying retrieved KV into GPU HBM. Used by retrieve()
+        # to charge the host-to-device DMA. Reuses the CPUMemory tier's config
+        # (no separate fields for the link).
+        cpu_cfg = self.opal_config["kvc"]["CPUMemory"]
+        self.cpu_gpu_link = AbstractDevice(
+            self.opal_env,
+            name=f"CPU->GPU.{self.worker_id}",
+            bandwidth_bytes_per_sec=int(cpu_cfg["bandwidth_GBps"] * 10**9),
+            latency_per_request_sec=cpu_cfg["latency_nsec"] / 10**9,
+            concurrency=cpu_cfg["concurrency"],
+        )
+
     def __str__(self):
         return f"{__class__.__name__}.{self.worker_id}"
 
@@ -995,16 +1046,17 @@ class OpalKVCacheEngine:
                 ret_mask[start:end] = True
             tier_tokens[location] = tier_tokens.get(location, 0) + sum(end - start for _, start, end in blocks)
 
-        # back to the retrieve() function and, here in the code memory_objects
-        # representing data in memory are transfer to the GPU. But we dont model
-        # that for now
-        """
-        if len(reordered_chunks) > 0:
-            _, memory_objs, starts, ends = zip(*reordered_chunks, strict=False)
-            self.gpu_connector.batched_to_gpu(
-                list(memory_objs), list(starts), list(ends), **kwargs
-            )
-        """
+        # Model the CPU->GPU (host-to-device) copy of the retrieved KV. The
+        # per-tier reads above brought the data into host memory; this charges
+        # the interconnect transfer of the total retrieved bytes into GPU HBM.
+        # Modeled as a single batched DMA over the shared cpu_gpu_link (concurrent
+        # retrieves contend for bandwidth), replacing the previously-unmodeled
+        # gpu_connector.batched_to_gpu() call.
+        if tot_kv_size > 0:
+            r = OpalIORequest(tot_kv_size)
+            self.cpu_gpu_link.process_one_request(r)
+            yield r.event
+
         retrieved_tokens = int(np.sum(ret_mask))
         onload_time_sec = self.opal_env.simpy_env.now - start_time
         self.log.debug(
@@ -1027,7 +1079,16 @@ class OpalKVCacheEngine:
         offsets: Optional[List[int]] = None,
         pin: bool = False,
         num_computed_tokens: int = 0,
-    ) -> Generator[simpy.Event, None, int]:
+    ) -> Generator[simpy.Event, None, tuple[int, dict[str, int]]]:
+        """Returns ``(matched_prefix_tokens, tier_hit_tokens)``.
+
+        ``tier_hit_tokens`` maps each storage tier (e.g. CPUMemory, LocalNVMe,
+        DistributedFS) to the number of prefix tokens served from it. Because
+        the underlying ``batched_contains`` walks tiers fastest->slowest and
+        consumes matched keys as it goes, every token is attributed to exactly
+        one tier -- the per-tier counts form a disjoint partition that sums to
+        ``matched_prefix_tokens`` (no double counting across tiers).
+        """
 
         self._counter_lookup += 1
         self._counter_lookup_tokens += len(tokens) if tokens else 0
@@ -1038,7 +1099,7 @@ class OpalKVCacheEngine:
         if self.storage_manager.cannot_store():
             # check if we are full or empty, then no need to do useless work
             yield self.opal_env.simpy_env.timeout(0.0001)
-            return res
+            return res, {}
 
         chunk_info_iterator = self.token_database.process_tokens(tokens=tokens, hashes=hashes, offsets=offsets)
 
@@ -1055,18 +1116,34 @@ class OpalKVCacheEngine:
 
         # If no tokens to lookup, return immediately
         if not keys:
-            return res
+            return res, {}
 
         # hit chunks by prefix matching
         hit_chunks, block_mapping = yield from self.storage_manager.batched_contains(keys, pin)
+
+        # Split the matched prefix across the serving tiers. block_mapping is an
+        # ordered {tier -> matched keys} map whose slices are disjoint and in
+        # prefix order (batched_contains consumes keys front-to-back), so each
+        # token lands in exactly one tier's bucket.
+        tier_hit_tokens: dict[str, int] = {}
+        chunk_cursor = 0
+        prev_end = aligned_computed_tokens
+        for backend_name, hit_keys in block_mapping.items():
+            n = len(hit_keys)
+            if n == 0:
+                continue
+            tier_end = chunk_info_list[chunk_cursor + n - 1][1]
+            tier_hit_tokens[backend_name] = tier_end - prev_end
+            prev_end = tier_end
+            chunk_cursor += n
 
         for idx, (start, end, key) in enumerate(chunk_info_list):
             if idx < hit_chunks:
                 res = end
                 continue
-            return res
+            return res, tier_hit_tokens
 
-        return res
+        return res, tier_hit_tokens
 
     def __del__(self):
         self.log.warning(

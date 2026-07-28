@@ -46,6 +46,27 @@ class LLMRequestStats:
     def get_router_arrival_time(self):
         return self._2a_router_arrival_time
 
+    def get_worker_arrival_time(self):
+        return self._2b_worker_time
+
+    def get_start_processing_time(self):
+        return self._3_start_processing_time
+
+    def get_request_ready_time(self):
+        return self._4_request_ready_time
+
+    def get_gpu_start_time(self):
+        return self._5_gpu_start_time
+
+    def get_prefill_done_time(self):
+        # NB: mark_prefill_done() sets `_5_prefill_done_time` (not the
+        # `_6_prefill_done_time` declared in __init__); this getter reads the
+        # one that is actually populated. 0 until prefill completes.
+        return getattr(self, "_5_prefill_done_time", 0)
+
+    def get_decode_done_time(self):
+        return self._7_decode_done_time
+
     def get_completion_time(self):
         return self._8_done_at_router
 
@@ -109,7 +130,13 @@ class LLMRequestStats:
     def get_total_worker_time(self):
         return self._7_decode_done_time - self._2b_worker_time
 
+    def get_e2e_time(self):
+        """Full end-to-end: request creation at workload generator → router marks completion."""
+        return self._8_done_at_router - self._1_creation_time
+
     def get_gpu_time(self):
+        # start end difference is the GPU time (it includes the scheduling overheads)
+        # TODO: may be we can do better
         # start end difference is the GPU time (it includes the scheduling overheads)
         # TODO: may be we can do better
         return self.__scheduler_timestamps[-1] - self.__scheduler_timestamps[0]
@@ -117,6 +144,7 @@ class LLMRequestStats:
 
 class LLMRequest:
     _id_counter = itertools.count()
+    __slots__ = ("id", "env", "stage_id", "worker_id", "input_length", "output_length", "hash_ids", "output_token_ids", "stats", "session_id", "span_id", "trace_id", "has_completed")
     __slots__ = ("id", "env", "stage_id", "worker_id", "input_length", "output_length", "hash_ids", "output_token_ids", "stats", "session_id", "span_id", "trace_id", "has_completed")
 
     """Represents a request with an ID and timing information."""
@@ -133,8 +161,25 @@ class LLMRequest:
         self.session_id: str | None = None
         self.span_id: str | None = None
         self.trace_id: str | None = None
+        self.output_token_ids: list[int] | None = None
+        self.session_id: str | None = None
+        self.span_id: str | None = None
+        self.trace_id: str | None = None
         self.stats = LLMRequestStats()
         self.stats._1_creation_time = self.env.now
+        self.has_completed = self.env.event()
+
+    def mark_completed(self):
+        # Why this is required: a producer that replays turns in order (e.g. an OTel
+        # session) submits turn i, then does `yield request.has_completed` and blocks,
+        # because it must not send turn i+1 until turn i is actually done. Nothing else
+        # tells it the turn finished. `has_completed` is the simpy event it waits on;
+        # firing it here is the signal that unblocks the producer. Without this call the
+        # event is never triggered and that `yield` hangs forever, stalling the session.
+        # The guard keeps it idempotent (simpy raises if an event is succeeded twice), and
+        # the event is owned by this request, so its firing rule lives here, not in callers.
+        if not self.has_completed.triggered:
+            self.has_completed.succeed(self)
         self.has_completed = self.env.event()
 
     def mark_completed(self):
