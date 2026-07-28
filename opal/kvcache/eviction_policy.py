@@ -212,7 +212,7 @@ class LRUPolicy(BaseAPCPolicy):
         # Proof-of-optimization log: `scanned` should stay ~= evicted (+ttl_skipped)
         # and be INDEPENDENT of `pinned`. Pinned blocks are not in the queue, so the
         # pass never walks them -- that's the O(victims) vs old O(resident) win.
-        log.info(
+        log.debug(
             "[LRU.evict] requested=%d evicted=%d | scanned=%d ttl_skipped=%d "
             "| eviction_queue=%d pinned=%d resident=%d (pinned NOT scanned)",
             count, len(victims), scanned, ttl_skipped,
