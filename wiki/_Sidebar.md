@@ -4,6 +4,7 @@
 * [[Configuration Simulation]]
 * [[Running Workloads]]
 * [[OTel Trace Replay]]
+* [GPU APC](GPU-APC)
 * [[Examples]]
 * Code Commentary 
   * [[Simpy Basics]] 
