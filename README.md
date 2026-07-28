@@ -28,11 +28,7 @@
 </p>
 
 
-## What's new 
-<<<<<<< HEAD
-=======
-  * July 28 2026 - Opal now models GPU Automatic Prefix Caching (APC) with pluggable eviction (LRU) and write-through to the KV-cache tiers. See https://github.com/IBM/opal-sim/wiki/GPU-APC 
->>>>>>> feature/eviction-policies
+## What's new
   * July 23 2026 - Opal now supports replaying Agentic Open-telemetry (Otel) traces. See https://github.com/IBM/opal-sim/wiki/OTel-Trace-Replay 
 
 ## Overview 

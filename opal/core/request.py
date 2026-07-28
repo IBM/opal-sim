@@ -45,27 +45,6 @@ class LLMRequestStats:
     def get_router_arrival_time(self):
         return self._2a_router_arrival_time
 
-    def get_worker_arrival_time(self):
-        return self._2b_worker_time
-
-    def get_start_processing_time(self):
-        return self._3_start_processing_time
-
-    def get_request_ready_time(self):
-        return self._4_request_ready_time
-
-    def get_gpu_start_time(self):
-        return self._5_gpu_start_time
-
-    def get_prefill_done_time(self):
-        # NB: mark_prefill_done() sets `_5_prefill_done_time` (not the
-        # `_6_prefill_done_time` declared in __init__); this getter reads the
-        # one that is actually populated. 0 until prefill completes.
-        return getattr(self, "_5_prefill_done_time", 0)
-
-    def get_decode_done_time(self):
-        return self._7_decode_done_time
-
     def get_completion_time(self):
         return self._8_done_at_router
 
@@ -128,10 +107,6 @@ class LLMRequestStats:
 
     def get_total_worker_time(self):
         return self._7_decode_done_time - self._2b_worker_time
-
-    def get_e2e_time(self):
-        """Full end-to-end: request creation at workload generator → router marks completion."""
-        return self._8_done_at_router - self._1_creation_time
 
     def get_gpu_time(self):
         # start end difference is the GPU time (it includes the scheduling overheads)
