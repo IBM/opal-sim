@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import json
+import math
 import os
 import re
 import numpy as np
@@ -156,6 +157,22 @@ class Trace(AbstractWorkload):
         else:
             self.chunk_size = 512
 
+        # Hash-id layout for _expand_prompt: split int32 into [base | offset].
+        # offset_bits must be wide enough to hold (chunk_size - 1); base fills the rest.
+        # Layout: [ base : 31 - offset_bits ][ offset : offset_bits ]   ← total 31 bits, signed-int32 safe.
+        # Shifting base into the high bits guarantees disjoint id ranges per chunk hash
+        # (no collisions between chunk_A's tail and chunk_B's head).
+        if self.chunk_size < 1:
+            raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}")
+        self._hash_id_offset_bits = max(1, math.ceil(math.log2(max(2, self.chunk_size))))
+        self._hash_id_base_bits = 31 - self._hash_id_offset_bits
+        if self._hash_id_base_bits < 1:
+            raise ValueError(
+                f"chunk_size={self.chunk_size} too large for int32 hash_ids "
+                f"(needs {self._hash_id_offset_bits} bits for offset, leaving {self._hash_id_base_bits} for base)"
+            )
+        self._hash_id_base_mask = (1 << self._hash_id_base_bits) - 1
+
         # how to convert timestamps to seconds
         if "multiplier_to_sec" in self.workload_params["workload_params"]:
             self.multiplier_to_sec = float(self.workload_params["workload_params"]["multiplier_to_sec"])
@@ -196,10 +213,11 @@ class Trace(AbstractWorkload):
             key = f"{h}:{expanded_size}"
 
             if key not in self._expanded_generated_prompts:
-                # Deterministic expansion: each chunk hash maps to unique token sequence
-                # This is 100x faster than random number generation
-                # Use chunk hash as seed for reproducible, non-overlapping sequences
-                base = hash(key) & 0x7FFFFFFF  # Ensure positive integer
+                # Deterministic expansion: each chunk hash maps to unique token sequence.
+                # Layout the id as [ base : self._hash_id_base_bits ][ offset : self._hash_id_offset_bits ]
+                # so (base + i) for i in [0, chunk_size) cannot overflow int32, and two distinct
+                # `key` values always produce disjoint id ranges.
+                base = (hash(key) & self._hash_id_base_mask) << self._hash_id_offset_bits
                 hash_ids = [(base + i) for i in range(expanded_size)]
                 self._expanded_generated_prompts[key] = hash_ids
 
