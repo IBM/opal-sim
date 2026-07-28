@@ -748,7 +748,7 @@ class LLMWorkerVLLMScheduler:
                 evicted = self._apc_evict_blocks(excess_blocks)
                 if evicted:
                     freed_mb = evicted * self.block_size * self.model_config.key_value_bytes / 2**20
-                    self.log.info(
+                    self.log.debug(
                         f"[APC] [Evict] Memory util={apc_util:.1%} (of non-active GPU) "
                         f"> eviction threshold={hbm_threshold:.1%}. "
                         f"Proactively migrated {evicted} block(s) ({freed_mb:.1f} MB) to CPU DRAM "
@@ -1543,7 +1543,7 @@ class LLMWorkerVLLMScheduler:
                     req.llm_request.stats.set_kvc_hit_tokens_per_tier("apc", apc_hit)
                     self._apc_hit_tokens_total += apc_hit
                     num_prefix_tokens = 0
-                    self.log.info(
+                    self.log.debug(
                         f"[HIT] [APC] req {req.request_id}: apc={apc_prefix} >= tiered={tiered_prefix}; "
                         f"{apc_hit}/{req.prompt_tokens} tokens attached in GPU "
                         f"({apc_hit / max(1, req.prompt_tokens):.0%}), zero I/O"
