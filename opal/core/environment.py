@@ -138,13 +138,13 @@ class OpalSimulatorEnvironment:
         self.wall_clock_start = time.perf_counter()
 
         if not (self.max_wall_time_sec and self.max_wall_time_sec > 0):
-            # No wall-clock cap: preserve the existing behavior exactly.
+            # No wall-clock cap: run until the end of the simulation
             if simulation_time == -1:
                 self.log.debug(f"Running the simulation until the end")
                 # run until all events elapsed
                 self.simpy_env.run()
             else:
-                # run for a finite time
+                # No wall-clock cap: run for a finite number of virtual seconds
                 self.log.debug(f"Running the simulation for {simulation_time} virtual seconds")
                 self.simpy_env.run(until=simulation_time)
                 self.mark_done()
