@@ -1500,7 +1500,10 @@ class LLMWorkerVLLMScheduler:
         # self.log.debug(f"Starting async KVC retrieve for request {req.request_id}")
 
         # Retrieve the KV cache (this yields and simulates the move time)
-        moved_tensors = yield safe_process(self.simpy_env, self._kvc_manager.retrieve(req.hash_ids, num_prefix_tokens))
+        # tier_tokens maps each storage tier -> exact tokens served from it for this prefill.
+        moved_tensors, tier_tokens = yield safe_process(
+            self.simpy_env, self._kvc_manager.retrieve(req.hash_ids, num_prefix_tokens)
+        )
         """
         Original:     [T, T, T, F, F, F]
         Inverted:     [F, F, F, T, T, T]
@@ -1510,6 +1513,10 @@ class LLMWorkerVLLMScheduler:
         """
         actual_retrieved_tokens = int(((~moved_tensors).cumsum(axis=0) == 0).sum())
         self.log.debug(f"Fetched KVC tokens {actual_retrieved_tokens} for Request {req.request_id}")
+        # sanity check number of tokens recorded across all tiers in the tier_sum dict equals the total number of actual_retrieved_tokens
+        tier_sum = sum(tier_tokens.values())
+        if tier_sum != actual_retrieved_tokens:
+            self.log.warning(f"tier_tokens sum ({tier_sum}) != actual_retrieved_tokens ({actual_retrieved_tokens})")
 
         # the number of fetched KVC token are essentially prompt length that is now processed
         req.prompt_processed = actual_retrieved_tokens
@@ -1570,6 +1577,7 @@ class LLMWorkerVLLMScheduler:
         # Transition to READY state
         req.kvc_fetch_in_progress = False
         req.llm_request.stats.set_prefix_hit_tokens(actual_retrieved_tokens)
+        req.llm_request.stats.set_kvc_tier_tokens(tier_tokens)
 
         req.phase = RequestPhase.READY
         req.llm_request.stats._4_request_ready_time = self.simpy_env.now
@@ -1726,12 +1734,22 @@ class LLMWorkerVLLMScheduler:
                 )
                 request.allocated_blocks = 0
 
+            # Attribute cache-miss prefill tokens (computed on the GPU) as a
+            # synthetic "Cache Miss" tier so the map sums to the full prompt length.
+            stats = request.llm_request.stats
+            tier_tokens = dict(stats.get_kvc_tier_tokens())
+            cache_miss_tokens = int(request.prompt_tokens - sum(tier_tokens.values()))
+            if cache_miss_tokens > 0:
+                tier_tokens["Cache Miss"] = cache_miss_tokens
+                stats.set_kvc_tier_tokens(tier_tokens)
+
             yield self.router_output_finished_req_queue.put(request.llm_request)
 
             self.log.info(
                 f"Request {request.request_id} retired on worker.{self.id}: "
                 f"prefill={request.prompt_tokens} tokens, "
-                f"decode={request.output_tokens} tokens, (prefix hit = {(request.llm_request.stats.get_prefix_hit_tokens() * 100 / request.prompt_tokens):.2f}%, sched steps = {request.llm_request.stats.get_scheduler_steps()})"
+                f"decode={request.output_tokens} tokens, (prefix hit = {(request.llm_request.stats.get_prefix_hit_tokens() * 100 / request.prompt_tokens):.2f}%, sched steps = {request.llm_request.stats.get_scheduler_steps()}), "
+                f"kvc tier tokens = {request.llm_request.stats.get_kvc_tier_tokens()}"
             )
 
 

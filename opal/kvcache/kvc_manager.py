@@ -931,7 +931,7 @@ class OpalKVCacheEngine:
         tokens: list[int],
         max_fetch: Optional[int] = None,
         **kwargs,
-    ) -> Generator[simpy.Event, None, np.ndarray]:
+    ) -> Generator[simpy.Event, None, Tuple[np.ndarray, Dict[str, int]]]:
         """Retrieve the KV caches from the cache engine. And put the retrieved
         KV cache to the serving engine via the GPU connector.
 
@@ -942,8 +942,10 @@ class OpalKVCacheEngine:
         and before retrieve() is called there are whole more new tokens generated
         that can be matched. In that case the GPU memory is over-committed badly.
 
-        :return: the boolean mask indicating which tokens are retrieved. The
-            length of the mask should be the same as the tokens. On CPU.
+        :return: a tuple of (mask, tier_tokens). The mask is a boolean array
+            indicating which tokens are retrieved (length == len(tokens), on CPU).
+            tier_tokens maps each storage tier name to the exact number of tokens
+            served from that tier (sum over that tier's chunks of end - start).
 
         :raises: ValueError if the number of Falses in the mask is not a
             multiple of the chunk size.
@@ -959,10 +961,15 @@ class OpalKVCacheEngine:
             tokens = tokens[:max_fetch]
 
         ret_mask = np.zeros(len(tokens), dtype=np.bool_)
+        # Exact per-tier token attribution: tier name -> number of tokens served
+        # from that tier. Chunks are the storage/attribution unit, but each chunk
+        # carries its exact token span (end - start), so summing spans yields exact
+        # token counts (the final partial chunk is counted precisely).
+        tier_tokens: Dict[str, int] = {}
         if self.storage_manager.cannot_store():
             # check if we are full or empty, then no need to do useless work
             yield self.opal_env.simpy_env.timeout(0.0001)
-            return ret_mask
+            return ret_mask, tier_tokens
 
         start_time = self.opal_env.simpy_env.now
         chunk_infos = []
@@ -986,6 +993,7 @@ class OpalKVCacheEngine:
                 reordered_chunks.append((key, memory_obj, start, end))
                 tot_kv_size += memory_obj.get_size()
                 ret_mask[start:end] = True
+            tier_tokens[location] = tier_tokens.get(location, 0) + sum(end - start for _, start, end in blocks)
 
         # back to the retrieve() function and, here in the code memory_objects
         # representing data in memory are transfer to the GPU. But we dont model
@@ -1010,7 +1018,7 @@ class OpalKVCacheEngine:
             onload_time_sec * 1000,
             tot_kv_size / onload_time_sec / 1024**3 if onload_time_sec > 0 else 0,
         )
-        return ret_mask
+        return ret_mask, tier_tokens
 
     def lookup(
         self,

@@ -29,6 +29,8 @@ class LLMRequestStats:
 
         self.__scheduler_timestamps = []
         self.__kvc_hit_tokens = 0
+        # tier name (e.g. "CPUMemory", "LocalNVMe", "DistributedFS") -> token count
+        self.__kvc_tier_tokens: dict[str, int] = {}
         # min what is needed is one
         self.__num_prefill_sched_steps = 0
 
@@ -57,6 +59,12 @@ class LLMRequestStats:
 
     def get_prefix_hit_tokens(self):
         return self.__kvc_hit_tokens
+
+    def set_kvc_tier_tokens(self, tier_tokens: dict[str, int]):
+        self.__kvc_tier_tokens = tier_tokens
+
+    def get_kvc_tier_tokens(self) -> dict[str, int]:
+        return self.__kvc_tier_tokens
 
     def get_scheduler_steps(self):
         return len(self.__scheduler_timestamps)

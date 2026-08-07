@@ -28,6 +28,7 @@ class StageStatistics:
         self.finished_requests = 0
         self.queued_requests = 0
         self.failed_requests = 0
+        self.kvc_tier_tokens = defaultdict(int)
         self.per_unit_req_done = []
         self.per_unit_workers = []
         self.per_unit_gpu_utilization = []
@@ -63,6 +64,7 @@ class StageStatistics:
             "stage_time_start": self.stage_time_start,
             "stage_time_end": self.stage_time_end,
             "input_output_tokens_sz": self.input_output_tokens_sz,
+            "kvc_tier_tokens": dict(self.kvc_tier_tokens),
         }
 
     @classmethod
@@ -85,6 +87,7 @@ class StageStatistics:
         obj.per_unit_gpu_utilization = data["per_unit_gpu_utilization"]
         obj.stage_time_end = data["stage_time_end"]
         obj.stage_time_start = data["stage_time_start"]
+        obj.kvc_tier_tokens = defaultdict(int, data.get("kvc_tier_tokens", {}))
 
         # convert list -> numpy array
         obj.latencies = np.array(data["latencies"], dtype=float)
@@ -200,6 +203,8 @@ class StageStatistics:
         # self.debug_val.append(stats.start_gpu_time - stats.end_kvc_time)
         self.raw_decode_values.append(stats.get_decode_times_including_ttft())
         self.input_output_tokens_sz.append((request.input_length, request.output_length))
+        for tier, n in stats.get_kvc_tier_tokens().items():
+            self.kvc_tier_tokens[tier] += n
 
     def add_total_time_in_system(self, breakdown: dict[str, float]):
         """Add a new request latency -- the total time it has spent in the system = routing + queuing + KVC + GPU"""
@@ -410,6 +415,20 @@ class StageStatistics:
         mean_ITL = res[6]
         median_ITL = res[7]
         P99_ITL = res[8]
+
+        # KVC per-tier token breakdown. Records raw tokens served per tier and percent of total prefill tokens.
+        kvc_tier_breakdown = {}
+        total_tier_tokens = sum(self.kvc_tier_tokens.values())
+        if total_tier_tokens > 0:
+            kvc_tier_breakdown["--------------KVC Tier Token Breakdown-------------"] = None
+            ordered_tiers = [t for t in sorted(self.kvc_tier_tokens) if t != "Cache Miss"]
+            if "Cache Miss" in self.kvc_tier_tokens:
+                ordered_tiers.append("Cache Miss")
+            for tier in ordered_tiers:
+                toks = self.kvc_tier_tokens[tier]
+                pct = toks * 100.0 / total_tier_tokens
+                kvc_tier_breakdown[f"{tier} ({pct:.2f}%)"] = toks
+
         final_stats = {
             "============ Serving Benchmark Result ============": None,
             "Note: negative values means that no sensible values can be calculated or just NYI. ": None,
@@ -436,6 +455,8 @@ class StageStatistics:
             "Mean ITL (ms)": mean_ITL,
             "Median ITL (ms)": median_ITL,
             "P99 ITL (ms)": P99_ITL,
+            **kvc_tier_breakdown,
             "*--------------------------------------------------": None,
         }
+
         self.__print(final_stats)
