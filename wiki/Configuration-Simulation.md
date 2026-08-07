@@ -9,6 +9,7 @@ Opal is configured via a JSON file. All parameters have defaults defined in `con
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `simulation_time` | float | `-1.0` | Run the simulation for the given virtual seconds. If `-1`, run until the workload finishes (all requests generated or all trace events replayed). |
+| `max_wall_time_sec` | float | `-1.0` | Cap the run after this many real (wall-clock) seconds. If `-1`, no wall-clock cap. When the cap is hit the run stops gracefully (partial stats are still written) and a warning is logged. Can be overridden from the CLI with `--max-wall-time`. |
 | `seed` | int | `42` | Python random seed for reproducibility. |
 | `num_workers` | int | `1` | Initial number of LLM workers at simulation start. |
 | `save_simulation_data` | bool | `true` | Save per-request statistics and simulation results to the output directory. |

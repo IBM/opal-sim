@@ -58,6 +58,13 @@ class OpalSimulator:
             default=False,
             help="Generate graphs or not",
         )
+        self.parser.add_argument(
+            "--max-wall-time",
+            type=float,
+            default=None,
+            help="Cap the run after this many real (wall-clock) seconds. Overrides simulation.max_wall_time_sec.",
+            required=False,
+        )
 
     def __del__(self):
         # dynamically enable it to track which config are never used
@@ -86,6 +93,8 @@ class OpalSimulator:
         args = vars(_args)
         self.config = OpalConfig()
         self.config.initialize(args["config"])
+        if args["max_wall_time"] is not None:
+            self.config._config["simulation"]["max_wall_time_sec"] = args["max_wall_time"]
         check_and_create_directory(args["output_dir"], create_parents=True, fail_if_exists=True)
         self.sim = OpalSimulatorEnvironment(self.config, output_dir=args["output_dir"])
 
