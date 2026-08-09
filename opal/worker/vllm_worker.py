@@ -7,23 +7,17 @@ import time
 """
 TODO(atr) - Known issues to address:
 
-1. _periodic_infra_updates is defined but never started in _run().
-   The router never receives load/utilization updates from this worker.
-
-2. Dead code in _async_kvc_retrieve: the assert on line ~1508 guarantees
+1. Dead code in _async_kvc_retrieve: the assert on line ~1508 guarantees
    actual_kvc_blocks == estimated_kvc_blocks, making the subsequent
    if-block unreachable.
 
-3. Starvation risk: preempted requests reset to prompt_processed=0 and get
+2. Starvation risk: preempted requests reset to prompt_processed=0 and get
    inserted at the front of waiting_requests, but under sustained memory
    pressure they can be repeatedly preempted (up to cap of 3) with no
    further recourse or priority escalation.
 
-4. Leaked request_tokens entries: Phase 3 preemption removes requests from
+3. Leaked request_tokens entries: Phase 3 preemption removes requests from
    batch lists but never does `del batch.request_tokens[req.request_id]`.
-
-5. Unused variable: total_requests in _periodic_infra_updates (line ~608)
-   is computed but never used.
 """
 
 """
@@ -264,6 +258,7 @@ class LLMWorkerVLLMScheduler:
         self.log = logging.getLogger(str(self))
 
         # Configuration
+        # Worker -> router SystemEvent push cadence (bounds how stale pooled metrics can be).
         self.periodic_infra_update_time = self.opalConfig["worker"]["worker_params"]["periodic_infra_update_time"]
         self.kvcevent_coalesce_time = self.opalConfig["worker"]["worker_params"]["kvcevent_coalesce_time"]
 
@@ -606,6 +601,9 @@ class LLMWorkerVLLMScheduler:
         # Then start request checker which may interrupt the scheduler
         self._check_new_request_process = self.simpy_env.process(self._check_new_requests())
         self.simpy_env.process(self._periodic_kvc_updates())
+        # Push periodic system telemetry (queue depth, KV util, GPU util) to the router.
+        if self.periodic_infra_update_time > 0:
+            self.simpy_env.process(self._periodic_infra_updates())
 
     def __str__(self):
         return f"{__class__.__name__}.{self.id}"
@@ -624,20 +622,23 @@ class LLMWorkerVLLMScheduler:
             self._pending_kvc_events = []
 
     def _periodic_infra_updates(self):
-        """Periodically send infrastructure updates to router."""
+        """Periodically send infrastructure updates to router every periodic_infra_update_time seconds."""
         router = self.opalEnv.registry.get_router()
         while not self.opalEnv.are_we_done():
             yield self.simpy_env.timeout(self.periodic_infra_update_time)
-            total_requests = len(self.waiting_requests) + len(self.running_requests)
+            queue_depth = len(self.waiting_requests) + len(self.running_requests)
             queue_occupancy = len(self.waiting_requests) / max(1, self.scheduler_config.max_num_seqs)
             gpu_utilization = min(1.0, len(self.running_requests) / max(1, self.scheduler_config.max_num_seqs))
+            # Fraction of GPU KV-cache blocks in use, in [0, 1].
+            kvc_utilization = 1.0 - (self.free_gpu_blocks / max(1, self.total_gpu_blocks))
 
             sys_event = SystemEvent(
                 worker_id=self.id,
                 load=gpu_utilization,
                 ingress_queue_occupancy=queue_occupancy,
-                mem_used=0.66,
                 gpu_utilization=gpu_utilization,
+                kvc_utilization=kvc_utilization,
+                queue_depth=queue_depth,
             )
             self.simpy_env.process(router.queue_events([sys_event]))
 

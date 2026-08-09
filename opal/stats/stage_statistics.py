@@ -32,6 +32,8 @@ class StageStatistics:
         self.per_unit_req_done = []
         self.per_unit_workers = []
         self.per_unit_gpu_utilization = []
+        # List of all MetricsSnapshot objects recorded during the simulation.
+        self.metrics_snapshots = []
         while val < max_bin:
             self.bins.append(val)
             val *= 2
@@ -59,6 +61,7 @@ class StageStatistics:
             "per_unit_throughput": self.per_unit_req_done,
             "per_unit_workers": self.per_unit_workers,
             "per_unit_gpu_utilization": self.per_unit_gpu_utilization,
+            "metrics_snapshots": self.metrics_snapshots,
             # numpy array -> list
             "latencies": self.latencies.tolist(),
             "stage_time_start": self.stage_time_start,
@@ -85,6 +88,7 @@ class StageStatistics:
         obj.per_unit_req_done = data["per_unit_throughput"]
         obj.per_unit_workers = data["per_unit_workers"]
         obj.per_unit_gpu_utilization = data["per_unit_gpu_utilization"]
+        obj.metrics_snapshots = data.get("metrics_snapshots", [])
         obj.stage_time_end = data["stage_time_end"]
         obj.stage_time_start = data["stage_time_start"]
         obj.kvc_tier_tokens = defaultdict(int, data.get("kvc_tier_tokens", {}))
@@ -225,6 +229,20 @@ class StageStatistics:
 
     def add_per_unit_workdone(self, done: int):
         self.per_unit_req_done.append(done)
+
+    def add_metrics_snapshot(self, snapshot: dict):
+        self.metrics_snapshots.append(snapshot)
+
+    def recent_p95_ttft_itl(self, window: int = 100, min_samples: int = 20) -> Tuple[float, float]:
+        """Return (p95_ttft_secs, p95_itl_secs) over the last `window` completed requests."""
+        recent_ttft = self.raw_ttft_values[-window:]
+        if len(recent_ttft) < min_samples:  # return (-1, -1) if there are too few requests
+            return -1.0, -1.0
+        p95_ttft = float(np.percentile(recent_ttft, 95))
+        recent_decode = self.raw_decode_values[-window:]
+        _, all_itls = self._calculate_itl_tpot(recent_decode)
+        p95_itl = float(np.percentile(all_itls, 95)) if len(all_itls) > 0 else -1.0
+        return p95_ttft, p95_itl
 
     def sample_workdone_per_K(self, k: int = 1):
         return sample_series_K(self.per_unit_req_done, k)

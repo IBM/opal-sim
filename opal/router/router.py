@@ -9,6 +9,7 @@ import numpy as np
 from opal.core.events import OpalInfraEvent, KVCEvent, SystemEvent
 from opal.kvcache.kvbm import KVBM
 from opal.core.request import LLMRequest
+from opal.stats.metrics import MetricsSnapshot
 from opal.worker.vllm_worker import LLMWorkerVLLMScheduler
 from opal.utils.util import parse_bool, safe_process
 
@@ -57,6 +58,11 @@ class Router:
         self._kvbm = KVBM(self.opal_env)
         self._worker_stats = None
         self._policy_func = self._get_policy_func()
+
+        # Last SystemEvent reported by each worker and the latest
+        # MetricsSnapshot built from them.
+        self._latest_worker_metrics: dict[int, SystemEvent] = {}
+        self._latest_metrics: MetricsSnapshot | None = None
 
         self.num_workers = self.opalConfig["simulation"]["num_workers"]
         self._worker_cls = LLMWorkerVLLMScheduler
@@ -147,7 +153,27 @@ class Router:
             # so far.
             utilization = gpu_time_avg * 100 / self.sim_env.now
             stats.add_per_unit_gpu_utilization(utilization)
+            self._pool_metrics_snapshot(stats)
         self.log.debug(f"Breaking the per second stats loop at {self.sim_env.now}")
+
+    def _pool_metrics_snapshot(self, stats):
+        """Create a new MetricsSnapshot object containing all of the most recent
+        telemetry from workers and newly computed latency percentiles.
+
+        A new snapshot is created every second, but workers only push new telemetry
+        every worker.periodic_infra_update_time seconds.
+        """
+        p95_ttft, p95_itl = stats.recent_p95_ttft_itl()
+        snapshot = MetricsSnapshot(
+            timestamp=self.sim_env.now,
+            queue_depth_per_worker={wid: ev.queue_depth for wid, ev in self._latest_worker_metrics.items()},
+            kvc_util_per_worker={wid: ev.kvc_utilization for wid, ev in self._latest_worker_metrics.items()},
+            gpu_util_per_worker={wid: ev.gpu_utilization for wid, ev in self._latest_worker_metrics.items()},
+            p95_ttft_secs=p95_ttft,
+            p95_itl_secs=p95_itl,
+        )
+        self._latest_metrics = snapshot
+        stats.add_metrics_snapshot(snapshot.to_dict())
 
     def _policy_leastloaded(self, req: LLMRequest):
         queue_size = min(self._outstanding_requests_per_worker.values())
@@ -263,6 +289,9 @@ class Router:
                     kvbm_events.append(e)
                 elif isinstance(e, SystemEvent):
                     systems_events.append(e)
+                    # Store the newest telemetry for this worker so we can record
+                    # it in a new MetricsSnapshot.
+                    self._latest_worker_metrics[e.worker_id] = e
                 else:
                     raise Exception(f"Unknown event type {type(e)}")
 
