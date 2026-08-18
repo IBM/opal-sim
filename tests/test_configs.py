@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-import pytest
-from pathlib import Path
+from pathlib import Path  # noqa: I001
 
-from opal.opal import OpalSimulator
-from opal.opal_config import OpalConfig
+import pytest
+
+from opal import OpalConfig, OpalSimulator
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 
