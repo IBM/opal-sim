@@ -53,17 +53,13 @@ class AbstractDevice:
         self.max_concurrency = concurrency
         self.concurrency = simpy.Resource(self.simpy_env, capacity=concurrency)
 
-        # Calculate minimum bytes that can be moved in one latency period
-        # Requests smaller than this can complete during latency without bandwidth manager
-        self.min_bytes_per_latency = self.bytes_per_sec * self.latency_per_request_sec
-
         # Track active requests with their remaining sizes
         self.active_requests = {}  # {request_id: {'request': OpalIORequest, 'remaining': bytes}}
         self.waiting_queue = []
 
         self.log = logging.getLogger(self.name)
         self.log.debug(
-            f" {self.name} initialized with capacity: {self.capacity_bytes/2**20} Mbytes, max_bw: {self.bytes_per_sec} bytes/sec, latency: {self.latency_per_request_sec}, concurrency: {concurrency}, min_bytes_per_latency: {self.min_bytes_per_latency}"
+            f" {self.name} initialized with capacity: {self.capacity_bytes/2**20} Mbytes, max_bw: {self.bytes_per_sec} bytes/sec, latency: {self.latency_per_request_sec}, concurrency: {concurrency}"
         )
 
         # Start the centralized bandwidth manager
@@ -97,6 +93,7 @@ class AbstractDevice:
             bw_per_req = self.bytes_per_sec / num_active
 
             # Find the time until the next request completes
+            # TODO: Consider using a minheap (e.g. heapq) data structure to avoid O(N^2) request insertion complexity
             time_to_next_completion = float("inf")
             for req_data in self.active_requests.values():
                 time_needed = req_data["remaining"] / bw_per_req
@@ -152,20 +149,11 @@ class AbstractDevice:
             # self.log.debug(f"{self.simpy_env.now} IORequest[{request.id}] queued")
             yield req_slot  # WAIT IN QUEUE
 
-            # Enforce minimum latency and check if request can complete within latency period
+            # Enforce minimum latency before the transfer begins
             if self.latency_per_request_sec > 0:
                 # self.log.debug(f"{self.simpy_env.now} IORequest[{request.id}] starts latency {self.latency_per_request_sec}")
                 yield self.simpy_env.timeout(self.latency_per_request_sec)
 
-                # If request size is less than or equal to what can be moved in latency period,
-                # complete it immediately without involving the bandwidth manager
-                if request.size <= self.min_bytes_per_latency:
-                    request.finish_time = self.simpy_env.now
-                    request.event.succeed(request)
-                    # self.log.debug(f"[\"{self.name}\"] {self.simpy_env.now} IORequest[{request.id}] completed during latency (size={request.size} <= min_bytes={self.min_bytes_per_latency:.2f})")
-                    return
-
-            # Request is too large to complete in latency period, register with bandwidth manager
             self.active_requests[request.id] = {"request": request, "remaining": request.size}
             # self.log.debug(f"{self.simpy_env.now} IORequest[{request.id}] begins transfer via bandwidth manager")
 
