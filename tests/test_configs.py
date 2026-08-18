@@ -2,8 +2,8 @@
 import pytest
 from pathlib import Path
 
-from opal.opal import OpalSimulator
-from opal.opal_config import OpalConfig
+from opal.core.opal import OpalSimulator
+from opal.config.opal_config import OpalConfig
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 

@@ -282,7 +282,8 @@ simulation-runs/sim-2026-04-02_14_30_45/
       "scale_latency": 40,
       "max_workers": 50,
       "policy": "MaxPrefix",       // RoundRobin, LeastLoaded, Random, MaxPrefix, Balanced
-      "periodic_infra_update_collection_time": 30,
+      "latency_percentile": "p95", // p90, p95, p99
+      "latency_window": 50,        // last N completed requests for TTFT/ITL SLOs
       "max_event_batch_size": 64
     }
   },

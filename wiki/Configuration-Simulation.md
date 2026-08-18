@@ -39,8 +39,9 @@ Nested under `router.router_params`:
 | `max_queue_threshold` | int | `4` | When any worker's queue reaches this size, trigger a scale-up event. |
 | `scale_latency` | float | `40` | Virtual seconds it takes to start a new worker after a scale-up is triggered. |
 | `max_workers` | int | `50` | Maximum number of workers to scale up to. |
-| `periodic_infra_update_collection_time` | float | `30` | Interval (virtual seconds) at which the router collects infrastructure status from workers. |
-| `max_event_batch_size` | int | `64` | Maximum number of requests the router dispatches per scheduling cycle. |
+| `latency_percentile` | string | `"p95"` | Percentile used for snapshot TTFT/ITL SLOs. Supported: `p90`, `p95`, `p99`. |
+| `latency_window` | int | `50` | Number of most recent completed requests over which TTFT/ITL percentiles are computed. Snapshots store `-1` until this many requests have finished. |
+| `max_event_batch_size` | int | `64` | Maximum number of infrastructure events processed per drain in `process_events`. |
 
 ---
 
@@ -88,7 +89,7 @@ Workloads are defined as a list of stages under `workload.stages`. Each stage ha
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `worker_local_queue_capacity` | int | `1` | Each worker's local queue capacity where the router places incoming requests. |
-| `periodic_infra_update_time` | float | `30` | Interval (virtual seconds) at which the worker reports its status to the router. |
+| `periodic_infra_update_time` | float | `5` | Interval (virtual seconds) at which the worker pushes status (`SystemEvent`) to the router. This is the sole bound on how stale worker metrics in a `MetricsSnapshot` can be. |
 | `kvcevent_coalesce_time` | float | `30` | Time window for coalescing KV cache events before processing. |
 
 ### worker.hw

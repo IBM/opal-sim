@@ -325,9 +325,19 @@
         </div>
 
         <div class="field">
-          <label>periodic_infra_update_collection_time</label>
-          <input type="number" name="router.router_params.periodic_infra_update_collection_time" value="30" />
-          <div class="hint">Virtual seconds between router-side infra-event drains (KV events from workers).</div>
+          <label>latency_percentile</label>
+          <select name="router.router_params.latency_percentile">
+            <option>p90</option>
+            <option selected>p95</option>
+            <option>p99</option>
+          </select>
+          <div class="hint">Percentile used for snapshot TTFT/ITL SLOs. Computed over <code>latency_window</code> recent completions.</div>
+        </div>
+
+        <div class="field">
+          <label>latency_window</label>
+          <input type="number" name="router.router_params.latency_window" value="50" />
+          <div class="hint">Number of most recent completed requests used for TTFT/ITL percentiles. Snapshots store -1 until this many requests have finished.</div>
         </div>
 
         <div class="field">
@@ -367,7 +377,7 @@
         <div class="field">
           <label>periodic_infra_update_time</label>
           <input type="number" name="worker.worker_params.periodic_infra_update_time" value="5" />
-          <div class="hint">Virtual seconds between worker→router status pushes (gpu_util, queue depth, kvc_util).</div>
+          <div class="hint">Virtual seconds between worker→router status pushes (queue depth, kvc_util). Snapshots are taken when these arrive.</div>
         </div>
 
         <div class="field">

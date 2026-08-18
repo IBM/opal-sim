@@ -24,8 +24,8 @@ Workload Generator
 The router runs several concurrent SimPy processes:
 - **`_accept_requests`** — pulls requests from the input queue, applies the routing policy, and dispatches to a worker.
 - **`_collect_completion`** — gathers finished requests from the shared results queue and records statistics.
-- **`_per_second_stats`** — samples per-second throughput and GPU utilization.
-- **`process_events`** — batches and processes infrastructure events (KVC updates, system events) used by prefix-aware policies.
+- **`_per_second_stats`** — samples per-second throughput, worker count, and GPU utilization for plots.
+- **`process_events`** — drains infrastructure events as they arrive (KVC updates, worker `SystemEvent` telemetry). KVC events update prefix-aware routing; `SystemEvent`s produce a `MetricsSnapshot`.
 - **`_per_second_scaling`** (optional) — auto-scales workers when queue depth exceeds a threshold.
 
 ## Routing Policies
@@ -58,7 +58,8 @@ When `enable_scaling` is `true`, the router checks worker queue depths every sim
     "max_queue_threshold": 4,
     "scale_latency": 40,
     "max_workers": 50,
-    "periodic_infra_update_collection_time": 30,
+    "latency_percentile": "p95",
+    "latency_window": 50,
     "max_event_batch_size": 64
   }
 }
@@ -71,9 +72,12 @@ When `enable_scaling` is `true`, the router checks worker queue depths every sim
 | `max_queue_threshold` | Queue depth that triggers a scale-up. |
 | `scale_latency` | Simulated seconds to provision a new worker. |
 | `max_workers` | Maximum number of workers allowed. |
-| `periodic_infra_update_collection_time` | Interval (sim seconds) between event processing cycles when the event queue is empty. |
+| `latency_percentile` | Percentile for snapshot TTFT/ITL SLOs (`p90`, `p95`, `p99`). |
+| `latency_window` | Number of most recent completed requests over which those percentiles are computed. |
 | `max_event_batch_size` | Max events processed per batch in `process_events`. |
 
 ## Event Processing
 
-Workers emit `KVCEvent` and `SystemEvent` messages to the router's event queue. These are batched (up to `max_event_batch_size`) and forwarded to the KVBM, which maintains the prefix-cache state used by the `MaxPrefix` policy. When the event queue is empty, the router sleeps for `periodic_infra_update_collection_time` before checking again.
+Workers emit `KVCEvent` and `SystemEvent` messages to the router's event queue. `process_events` blocks until an event arrives, then drains up to `max_event_batch_size` events and forwards them to the KVBM.
+
+`SystemEvent` telemetry is the last report from each worker (pushed every `worker.periodic_infra_update_time` seconds). When a drain includes at least one `SystemEvent`, the router records a `MetricsSnapshot`: reported queue depth and KV-cache utilization, plus TTFT/ITL at `latency_percentile` over the last `latency_window` completions. Snapshots are not taken on a wall-clock tick; KVC-only batches do not create snapshots.

@@ -233,16 +233,21 @@ class StageStatistics:
     def add_metrics_snapshot(self, snapshot: dict):
         self.metrics_snapshots.append(snapshot)
 
-    def recent_p95_ttft_itl(self, window: int = 100, min_samples: int = 20) -> Tuple[float, float]:
-        """Return (p95_ttft_secs, p95_itl_secs) over the last `window` completed requests."""
-        recent_ttft = self.raw_ttft_values[-window:]
-        if len(recent_ttft) < min_samples:  # return (-1, -1) if there are too few requests
+    def recent_ttft_itl(self, percentile: int, window: int) -> Tuple[float, float]:
+        """Return (ttft_secs, itl_secs) at `percentile` over the last `window` completed requests.
+
+        Returns (-1.0, -1.0) until at least `window` requests have finished.
+        """
+        if window <= 0:
+            raise ValueError(f"window must be a positive integer, got {window}")
+        if len(self.raw_ttft_values) < window:
             return -1.0, -1.0
-        p95_ttft = float(np.percentile(recent_ttft, 95))
+        recent_ttft = self.raw_ttft_values[-window:]
+        ttft = float(np.percentile(recent_ttft, percentile))
         recent_decode = self.raw_decode_values[-window:]
         _, all_itls = self._calculate_itl_tpot(recent_decode)
-        p95_itl = float(np.percentile(all_itls, 95)) if len(all_itls) > 0 else -1.0
-        return p95_ttft, p95_itl
+        itl = float(np.percentile(all_itls, percentile)) if len(all_itls) > 0 else -1.0
+        return ttft, itl
 
     def sample_workdone_per_K(self, k: int = 1):
         return sample_series_K(self.per_unit_req_done, k)
