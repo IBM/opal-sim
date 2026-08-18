@@ -55,7 +55,9 @@ class AbstractDevice:
 
         # Track active requests with their remaining sizes
         self.active_requests = {}  # {request_id: {'request': OpalIORequest, 'remaining': bytes}}
-        self.waiting_queue = []
+        # Requests queued since the most recent IO completion
+        # Invariant: len(self.active_requests) + len(interrupt_queue) < self.concurrency
+        self.interrupt_queue = []
 
         self.log = logging.getLogger(self.name)
         self.log.debug(
@@ -78,6 +80,14 @@ class AbstractDevice:
         last_time = self.simpy_env.now
 
         while not self.opal_env.are_we_done():
+            assert len(self.active_requests) + len(self.interrupt_queue) <= self.max_concurrency
+
+            # Examine the interrupt queue and add any requests that were submitted on interrupt.
+            for request in self.interrupt_queue:
+                self.active_requests[request.id] = {"request": request, "remaining": request.size}
+                # self.log.debug(f"{self.simpy_env.now} IORequest[{request.id}] begins transfer via bandwidth manager")
+            self.interrupt_queue.clear()
+
             # If no active requests, sleep indefinitely until interrupted
             if not self.active_requests:
                 try:
@@ -154,11 +164,9 @@ class AbstractDevice:
                 # self.log.debug(f"{self.simpy_env.now} IORequest[{request.id}] starts latency {self.latency_per_request_sec}")
                 yield self.simpy_env.timeout(self.latency_per_request_sec)
 
-            self.active_requests[request.id] = {"request": request, "remaining": request.size}
-            # self.log.debug(f"{self.simpy_env.now} IORequest[{request.id}] begins transfer via bandwidth manager")
-
             # Interrupt the bandwidth manager to recalculate
             try:
+                self.interrupt_queue.append(request)
                 self.bw_manager_process.interrupt()
             except RuntimeError as e:
                 self.log.warning(
