@@ -38,8 +38,8 @@ class AbstractDevice:
         opal_env: "OpalSimulatorEnvironment",
         name: str = "abstract",
         capacity_bytes: int = 1,
-        bandwidth_bytes_per_sec: int = 10,
-        latency_per_request_sec: int = 0,
+        bandwidth_bytes_per_sec: float = 10.0,
+        latency_per_request_sec: float = 0.0,
         concurrency: int = 5,
     ):
         self.opal_env = opal_env
