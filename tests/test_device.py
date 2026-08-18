@@ -24,6 +24,35 @@ def fake_env():
     return MockEnv()
 
 class TestAbstractDevice:
+    def test_latency_dominated(self, fake_env:OpalSimulatorEnvironment):
+        """
+        Test a small I/O such that its duration (processing time) is dominated by its latency and not BW
+        """
+        dev = AbstractDevice(fake_env, "fake_device", CAPACITY, BW, LATENCY_SEC, CONCURRENCY)
+        request = OpalIORequest(1 * 1024) # 1KiB
+        dev.process_one_request(request)
+        env = fake_env.simpy_env
+        env.run(1000) # arbitrary
+        duration = request.finish_time - request.arrival_time
+        # 1KiB transfers in ~9.5ns against 20ms of latency, so latency should
+        # account for essentially the whole duration
+        assert duration >= LATENCY_SEC
+        assert duration < LATENCY_SEC * 1.01
+
+    def test_bandwidth_bound(self, fake_env:OpalSimulatorEnvironment):
+        """
+        Test large requests take longer than latency
+        """
+        dev = AbstractDevice(fake_env, "fake_device", CAPACITY, BW, LATENCY_SEC, CONCURRENCY)
+        request_size = 100 * GIB
+        request = OpalIORequest(request_size)
+        dev.process_one_request(request)
+        env = fake_env.simpy_env
+        env.run(1000) # arbitrary
+        duration = request.finish_time - request.arrival_time
+        # latency is additive on top of the transfer, not overlapped with it
+        assert duration == pytest.approx(LATENCY_SEC + request_size / BW, rel=1e-6)
+
     def test_measured_bw(self, fake_env:OpalSimulatorEnvironment):
         """
         Test that measured bandwidth meets configured bandwidth
