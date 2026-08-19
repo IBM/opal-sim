@@ -21,8 +21,7 @@ def test_wall_clock_cap_truncates_run(tmp_path, monkeypatch):
     config = _load_config()
     config._config["simulation"]["max_wall_time_sec"] = 0.001
 
-    opal = OpalSimulator()
-    opal.init_from_config(config=config, output_dir=str(tmp_path))
+    opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     wall_clock_elapsed, virtual_time = opal.run(None)
 
     assert opal.sim.are_we_done()
@@ -39,8 +38,7 @@ def test_no_wall_clock_cap_runs_to_completion(tmp_path, monkeypatch):
     config = _load_config()
     assert config._config["simulation"]["max_wall_time_sec"] == -1.0
 
-    opal = OpalSimulator()
-    opal.init_from_config(config=config, output_dir=str(tmp_path))
+    opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     _, virtual_time = opal.run(10)
 
     assert opal.sim.are_we_done()
