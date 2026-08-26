@@ -241,7 +241,7 @@ Then open [http://127.0.0.1:9290](http://127.0.0.1:9290) in a browser. The form 
 When you click **Validate**, the UI posts the generated JSON to the server, which runs it through `OpalConfig().initialize()` — the same path used at simulation start. This catches two classes of problems early:
 
 1. **Malformed JSON** — syntax errors or structurally invalid input that would prevent the file from loading at all.
-2. **Missing stopping condition** — for non-trace workloads (i.e. anything other than `Trace` / `SC25Workload`), at least one of `simulation_time`, `total_requests`, or `time_duration_sec` must be set to a positive value. A config that omits all three would run forever; the validator rejects it with an error message.
+2. **Missing stopping condition** — for non-trace workloads (i.e. anything other than `Trace` / `SC25Workload`), at least one of `simulation_time`, `total_requests`, or `time_duration_sec` must be set to a positive value. A config that omits all three would run forever; the validator rejects it with an error message. (Note: these are all measured in *simulated* time / request counts. A separate `simulation.max_wall_time_sec` is also settable via the `--max-wall-time` CLI flag. This caps the run by *real* elapsed wall-clock time.)
 
 **What it does not check:** most field-level mistakes — wrong types, out-of-range numbers, missing required keys inside `model`/`router`/`kvc`/`worker` sections, or whether a trace file path actually exists on disk — are only caught when the simulator first reads those values during a run. So validation here is a useful early sanity check, not a guarantee that the simulation will complete successfully.
 

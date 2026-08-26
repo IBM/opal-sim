@@ -264,6 +264,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 {
   "simulation": {
     "simulation_time": -1.0,       // -1 = run until workload completes
+    "max_wall_time_sec": -1.0,     // -1 = no real-time cap; else stop after N wall-clock seconds
     "seed": 42,
     "num_workers": 1,
     "save_simulation_data": true,
@@ -369,6 +370,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 
 **Simulation:**
 - `simulation_time`: Virtual seconds to run (-1 = until workload done)
+- `max_wall_time_sec`: Real (wall-clock) seconds cap (-1 = disabled); overridable via `--max-wall-time` CLI flag
 - `seed`: Random seed for reproducibility
 - `num_workers`: Initial worker count
 
