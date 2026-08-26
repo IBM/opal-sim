@@ -22,7 +22,8 @@
       "scale_latency": 40,
       "max_workers": 50,
       "policy": "MaxPrefix", 
-      "periodic_infra_update_collection_time": 30, 
+      "latency_percentile": "p95",
+      "latency_window": 50,
       "max_event_batch_size": 64 
     }
   },
@@ -57,7 +58,7 @@
 
     "worker_params":{      
       "worker_local_queue_capacity": 1,      
-      "periodic_infra_update_time": 30, 
+      "periodic_infra_update_time": 5, 
       "kvcevent_coalesce_time": 30
     }, 
 

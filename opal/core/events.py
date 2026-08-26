@@ -34,5 +34,8 @@ class SystemEvent(OpalInfraEvent):
     # 0 = min, 1 = max
     load: float
     ingress_queue_occupancy: float
-    mem_used: float
     gpu_utilization: float
+    # kvc_utilization: fraction of GPU KV-cache blocks in use (1 - free/total), in [0, 1].
+    kvc_utilization: float = 0.0
+    # queue_depth: absolute in-flight request count on the worker (waiting + running).
+    queue_depth: int = 0

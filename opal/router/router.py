@@ -9,6 +9,7 @@ import numpy as np
 from opal.core.events import OpalInfraEvent, KVCEvent, SystemEvent
 from opal.kvcache.kvbm import KVBM
 from opal.core.request import LLMRequest
+from opal.stats.metrics import MetricsSnapshot
 from opal.worker.vllm_worker import LLMWorkerVLLMScheduler
 from opal.utils.util import parse_bool, safe_process
 
@@ -39,6 +40,19 @@ class Router:
                 f"{policy} no such routing policy. Supported policies are: RoundRobin, LeastLoaded, Random, MaxPrefix, Balanced"
             )
 
+    def _get_latency_percentile(self) -> int:
+        name = str(self.opalConfig["router"]["router_params"]["latency_percentile"]).lower()
+        mapping = {"p90": 90, "p95": 95, "p99": 99}
+        if name not in mapping:
+            raise Exception(f"{name} is not a supported latency percentile. Supported: p90, p95, p99")
+        return mapping[name]
+
+    def _get_latency_window(self) -> int:
+        window = int(self.opalConfig["router"]["router_params"]["latency_window"])
+        if window <= 0:
+            raise Exception(f"latency_window must be a positive integer, got {window}")
+        return window
+
     def __init__(self, opal_env, opal_config):
         self.opal_env = opal_env
         self.opalConfig = opal_config
@@ -51,12 +65,16 @@ class Router:
         self.results_queue = simpy.Store(self.sim_env)
         # leave infinite capacity for this
         self._event_queue = simpy.Store(self.sim_env)
-        self.periodic_infra_update_collection_time = self.opalConfig["router"]["router_params"][
-            "periodic_infra_update_collection_time"
-        ]
         self._kvbm = KVBM(self.opal_env)
         self._worker_stats = None
         self._policy_func = self._get_policy_func()
+        self._latency_percentile = self._get_latency_percentile()
+        self._latency_window = self._get_latency_window()
+
+        # Last SystemEvent reported by each worker and the latest
+        # MetricsSnapshot built from them.
+        self._latest_worker_metrics: dict[int, SystemEvent] = {}
+        self._latest_metrics: MetricsSnapshot | None = None
 
         self.num_workers = self.opalConfig["simulation"]["num_workers"]
         self._worker_cls = LLMWorkerVLLMScheduler
@@ -148,6 +166,25 @@ class Router:
             utilization = gpu_time_avg * 100 / self.sim_env.now
             stats.add_per_unit_gpu_utilization(utilization)
         self.log.debug(f"Breaking the per second stats loop at {self.sim_env.now}")
+
+    def _pool_metrics_snapshot(self, stats):
+        """Create a MetricsSnapshot from the last SystemEvent each worker pushed,
+        plus SLO percentiles over the configured sliding window of completions.
+
+        Called when process_events() drains a batch that contains SystemEvents.
+        """
+        ttft, itl = stats.recent_ttft_itl(self._latency_percentile, self._latency_window)
+        snapshot = MetricsSnapshot(
+            timestamp=self.sim_env.now,
+            queue_depth_per_worker={wid: ev.queue_depth for wid, ev in self._latest_worker_metrics.items()},
+            kvc_util_per_worker={wid: ev.kvc_utilization for wid, ev in self._latest_worker_metrics.items()},
+            percentile=self._latency_percentile,
+            window=self._latency_window,
+            ttft_secs=ttft,
+            itl_secs=itl,
+        )
+        self._latest_metrics = snapshot
+        stats.add_metrics_snapshot(snapshot.to_dict())
 
     def _policy_leastloaded(self, req: LLMRequest):
         queue_size = min(self._outstanding_requests_per_worker.values())
@@ -245,6 +282,16 @@ class Router:
         for elem in elist:
             yield self._event_queue.put(elem)
 
+    def _ingest_event(self, e: OpalInfraEvent, kvbm_events: list[KVCEvent], systems_events: list[SystemEvent]):
+        if isinstance(e, KVCEvent):
+            kvbm_events.append(e)
+        elif isinstance(e, SystemEvent):
+            systems_events.append(e)
+            # Store last reported SystemEvent from this worker. Used to create telemetry snapshot
+            self._latest_worker_metrics[e.worker_id] = e
+        else:
+            raise Exception(f"Unknown event type {type(e)}")
+
     def process_events(self):
         max_event_batch_size = self.opalConfig["router"]["router_params"]["max_event_batch_size"]
 
@@ -252,31 +299,22 @@ class Router:
             kvbm_events = []
             systems_events = []
 
-            # Collect events up to batch size
+            e = yield self._event_queue.get()
+            self._ingest_event(e, kvbm_events, systems_events)
+
             while len(self._event_queue.items) > 0 and not self.opal_env.are_we_done():
-                # Stop if either batch is full
                 if len(kvbm_events) >= max_event_batch_size or len(systems_events) >= max_event_batch_size:
                     break
-
                 e = yield self._event_queue.get()
-                if isinstance(e, KVCEvent):
-                    kvbm_events.append(e)
-                elif isinstance(e, SystemEvent):
-                    systems_events.append(e)
-                else:
-                    raise Exception(f"Unknown event type {type(e)}")
+                self._ingest_event(e, kvbm_events, systems_events)
 
-            # Process batches if we have any events
             if kvbm_events or systems_events:
                 self._kvbm.process_kvc_events(kvbm_events)
                 self._kvbm.process_system_events(systems_events)
 
-            # If queue still has items, continue immediately
-            if len(self._event_queue.items) > 0:
-                continue
-
-            # Otherwise sleep until next periodic check
-            yield self.sim_env.timeout(self.periodic_infra_update_collection_time)
+            if systems_events:
+                stats = self.opal_env.workload_orchestrator.get_active_stage_stats()
+                self._pool_metrics_snapshot(stats)
 
     def shutdown(self):
         self._stats_request_allocated_per_worker = dict(sorted(self._stats_request_allocated_per_worker.items()))
