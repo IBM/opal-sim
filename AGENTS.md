@@ -558,8 +558,7 @@ def test_my_feature(tmp_path, monkeypatch):
     monkeypatch.chdir(Path(__file__).resolve().parent.parent)
     config = OpalConfig()
     config.initialize("./configs/defaults.json")
-    opal = OpalSimulator()
-    opal.init_from_config(config=config, output_dir=str(tmp_path))
+    opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     opal.run(10)  # run for 10 virtual seconds
 ```
 
@@ -789,8 +788,7 @@ PYTHONPATH=`pwd`:$PYTHONPATH python ./opal/main.py
 **3. Configuration Errors**
 ```python
 # Check config loading
-sim = OpalSimulator()
-sim.init_from_config(config)
+sim = OpalSimulator.from_config(config)
 print(json.dumps(sim.config._config, indent=2))
 ```
 

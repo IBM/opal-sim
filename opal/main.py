@@ -10,8 +10,7 @@ from opal.core.opal import OpalSimulator
 if __name__ == "__main__":
     print(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     print(sys.path)
-    opal = OpalSimulator()
-    opal.init_from_cmd_args()
+    opal = OpalSimulator.from_cmd_args()
 
     if True == get_bool_env_var("OPAL_PROFILE", False):
         runtime, virtual_time = profile_function(opal.run)
