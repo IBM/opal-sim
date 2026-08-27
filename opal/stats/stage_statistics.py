@@ -20,6 +20,7 @@ class StageStatistics:
         self.raw_latency_values = []
         self.raw_queuing_values = []
         self.raw_kvc_io_time = []
+        self.raw_kvc_hit_tokens = []
         self.raw_gpu_time = []
         self.raw_ttft_values = []
         self.raw_decode_values: List[List[int]] = []
@@ -49,6 +50,7 @@ class StageStatistics:
             "raw_latency_values": self.raw_latency_values,
             "raw_queuing_values": self.raw_queuing_values,
             "raw_kvc_io_time": self.raw_kvc_io_time,
+            "raw_kvc_hit_tokens": self.raw_kvc_hit_tokens,
             "raw_gpu_time": self.raw_gpu_time,
             "raw_ttft_values": self.raw_ttft_values,
             "raw_decode_values": self.raw_decode_values,
@@ -77,6 +79,7 @@ class StageStatistics:
         obj.raw_latency_values = data["raw_latency_values"]
         obj.raw_queuing_values = data["raw_queuing_values"]
         obj.raw_kvc_io_time = data["raw_kvc_io_time"]
+        obj.raw_kvc_hit_tokens = data.get("raw_kvc_hit_tokens", [])
         obj.raw_gpu_time = data["raw_gpu_time"]
         obj.raw_ttft_values = data["raw_ttft_values"]
         obj.raw_decode_values = data["raw_decode_values"]
@@ -199,6 +202,7 @@ class StageStatistics:
         self.raw_queuing_values.append(stats.get_queue_time())
         self.raw_ttft_values.append(stats.get_ttft())
         self.raw_kvc_io_time.append(stats.get_kvc_fetch_time())
+        self.raw_kvc_hit_tokens.append(stats.get_prefix_hit_tokens())
         self.raw_gpu_time.append(stats.get_gpu_time())
         # self.debug_val.append(stats.start_gpu_time - stats.end_kvc_time)
         self.raw_decode_values.append(stats.get_decode_times_including_ttft())
