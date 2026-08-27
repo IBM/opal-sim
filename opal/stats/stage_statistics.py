@@ -346,7 +346,7 @@ class StageStatistics:
         flat = tuple(1000 * float(x) if float(x) > 0 else float(x) for sub in val for x in sub)
         return flat
 
-    def __print(self, dict_label_value, label_width=40, value_width=15):
+    def __print(self, dict_label_value, label_width=40, value_width=15, log_file=None):
         """
         Expected input as a format of :
         "label1" : value1
@@ -354,12 +354,12 @@ class StageStatistics:
         ...
         """
         for label, value in dict_label_value.items():
-            if value is None:
-                print(f"{label}")
-            else:
-                print(f"{label:<{label_width}}: {value:>{value_width},.2f}")
+            line = f"{label}" if value is None else f"{label:<{label_width}}: {value:>{value_width},.2f}"
+            print(line)
+            if log_file is not None:
+                print(line, file=log_file)
 
-    def print_summary_results(self):
+    def print_summary_results(self, log_file=None):
         """The format should be something what vllm serve generates, something like:
 
         ============ Serving Benchmark Result ============
@@ -463,4 +463,4 @@ class StageStatistics:
             "*--------------------------------------------------": None,
         }
 
-        self.__print(final_stats)
+        self.__print(final_stats, log_file=log_file)
