@@ -160,19 +160,28 @@ class OpalSimulator:
 
     def _process_per_stage(self):
         stats = self.sim.workload_orchestrator.stage_stats
-        for i, s in enumerate(stats):
-            print(f"===== stage_{i} =====")
-            # s.print_simend_stats()
-            s.print_summary_results()
-            if self.plot_graphs:
-                working_dir = os.path.join(
-                    self.sim.output_dir,
-                    self.sim.workload_orchestrator.get_stage_directory_name(i),
-                )
-                simend_plot(s, self.config, working_dir)
-            else:
-                print(f"Not plotting graphs as --no-graphs was set.")
-                print(f"If you want the final graphs, please specify -g / --graphs flag.")
+        log_path = os.path.join(self.sim.output_dir, "simulation.log") if self.sim.output_dir else None
+        log_file = open(log_path, "a") if log_path else None
+        try:
+            for i, s in enumerate(stats):
+                header = f"===== stage_{i} ====="
+                print(header)
+                if log_file is not None:
+                    print(header, file=log_file)
+                # s.print_simend_stats()
+                s.print_summary_results(log_file=log_file)
+                if self.plot_graphs:
+                    working_dir = os.path.join(
+                        self.sim.output_dir,
+                        self.sim.workload_orchestrator.get_stage_directory_name(i),
+                    )
+                    simend_plot(s, self.config, working_dir)
+                else:
+                    print(f"Not plotting graphs as --no-graphs was set.")
+                    print(f"If you want the final graphs, please specify -g / --graphs flag.")
+        finally:
+            if log_file is not None:
+                log_file.close()
 
     def _process_global_stats(self):
         # here we collect per-stage number and plot a global trend
