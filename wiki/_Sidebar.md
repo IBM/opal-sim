@@ -4,6 +4,7 @@
 * [[Configuration Simulation]]
 * [[Running Workloads]]
 * [[OTel Trace Replay]]
+* [[RAG Workload]]
 * [[Examples]]
 * Code Commentary 
   * [[Simpy Basics]] 
