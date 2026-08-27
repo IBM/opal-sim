@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+from pathlib import Path  # noqa: I001
+
 import pytest
-from pathlib import Path
 
 from opal.core.opal import OpalSimulator
 from opal.config.opal_config import OpalConfig
