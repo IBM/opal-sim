@@ -264,6 +264,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 {
   "simulation": {
     "simulation_time": -1.0,       // -1 = run until workload completes
+    "max_wall_time_sec": -1.0,     // -1 = no real-time cap; else stop after N wall-clock seconds
     "seed": 42,
     "num_workers": 1,
     "save_simulation_data": true,
@@ -369,6 +370,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 
 **Simulation:**
 - `simulation_time`: Virtual seconds to run (-1 = until workload done)
+- `max_wall_time_sec`: Real (wall-clock) seconds cap (-1 = disabled); overridable via `--max-wall-time` CLI flag
 - `seed`: Random seed for reproducibility
 - `num_workers`: Initial worker count
 
@@ -556,8 +558,7 @@ def test_my_feature(tmp_path, monkeypatch):
     monkeypatch.chdir(Path(__file__).resolve().parent.parent)
     config = OpalConfig()
     config.initialize("./configs/defaults.json")
-    opal = OpalSimulator()
-    opal.init_from_config(config=config, output_dir=str(tmp_path))
+    opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     opal.run(10)  # run for 10 virtual seconds
 ```
 
@@ -787,8 +788,7 @@ PYTHONPATH=`pwd`:$PYTHONPATH python ./opal/main.py
 **3. Configuration Errors**
 ```python
 # Check config loading
-sim = OpalSimulator()
-sim.init_from_config(config)
+sim = OpalSimulator.from_config(config)
 print(json.dumps(sim.config._config, indent=2))
 ```
 
