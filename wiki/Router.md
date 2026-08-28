@@ -1,6 +1,6 @@
 # Router
 
-The `Router` class (`opal/router.py`) is the central request dispatcher in OpalSim. It accepts incoming LLM requests, selects a target worker based on a configurable routing policy, and collects completions.
+The `Router` class (`opal/router.py`) is the central request dispatcher in OpalSim. It accepts incoming LLM requests, selects a target worker based on a configurable routing policy, and collects completions. For the full config reference (all `router.router_params` defaults alongside every other simulation section), see [[Configuration Simulation]].
 
 ## Architecture
 

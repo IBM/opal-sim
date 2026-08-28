@@ -1,5 +1,7 @@
 # vllm_worker.py - vLLM Scheduler Integration
 
+For the full config reference — every `worker.*` default as actually shipped in `configs/defaults.json` (which override some of this page's code-level fallback defaults, noted below) — see [[Configuration Simulation]].
+
 ## Overview
 
 `vllm_worker.py` implements an LLM worker that integrates vLLM v1's continuous batching scheduler with SimPy discrete event simulation. The module uses an **interrupt-driven architecture** (no polling) with a **persistent batch model** that accurately simulates real vLLM behavior including preemption, KV cache fetch rate-limiting, and tensor parallelism.
@@ -121,11 +123,11 @@ Single source of truth for request states:
 #### 2. **VLLMSchedulerConfig**
 Configuration parameters for scheduler:
 - `max_num_seqs`: Maximum sequences in a batch (default 256)
-- `max_num_batched_tokens`: Maximum tokens per batch (default 2048)
+- `max_num_batched_tokens`: Maximum tokens per batch (dataclass fallback 2048 if omitted entirely; `configs/defaults.json` ships 8192)
 - `chunked_prefill`: Enable chunked prefill (default True)
 - `max_model_len`: Maximum sequence length (from model config)
 - `gpu_memory_kvcache_bytes`: Available GPU memory for KV cache
-- `max_kvc_ready_requests`: Max KVC-fetching requests in waiting queue (default 4)
+- `max_kvc_ready_requests`: Max KVC-fetching requests in waiting queue (dataclass fallback 4 if omitted entirely; `configs/defaults.json` ships 8)
 - `lookahead_reqs`: Max waiting requests to scan when batch is non-empty (default 256)
 
 #### 3. **VLLMSchedulerRequest**
@@ -195,10 +197,10 @@ Add to your `sim_config/*.json`:
 | Parameter | Description | Default | Impact |
 |-----------|-------------|---------|--------|
 | `max_num_seqs` | Max sequences in a batch | 256 | Batch size limit |
-| `max_num_batched_tokens` | Max tokens per batch | 2048 | Token throughput & chunk size |
+| `max_num_batched_tokens` | Max tokens per batch | 8192 (`configs/defaults.json`; dataclass fallback 2048 if key omitted) | Token throughput & chunk size |
 | `chunked_prefill` | Enable chunked prefill | true | Large prompt handling |
 | `block_size` | Tokens per GPU memory block | 16 | Memory granularity |
-| `max_kvc_ready_requests` | Max KVC-fetching requests in waiting queue | 4 | KVC fetch rate-limiting |
+| `max_kvc_ready_requests` | Max KVC-fetching requests in waiting queue | 8 (`configs/defaults.json`; dataclass fallback 4 if key omitted) | KVC fetch rate-limiting |
 | `lookahead_reqs` | Max waiting requests scanned per rebuild | 256 | Batch rebuild scan depth |
 | `memory_gb` | GPU memory in GB | - | Total per-GPU memory |
 | `tp` | Tensor parallelism degree | 1 | Effective memory = tp * memory_gb |
