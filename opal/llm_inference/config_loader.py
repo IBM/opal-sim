@@ -164,7 +164,6 @@ def estimate_params(cfg: dict) -> ParamEstimate:
     num_experts = get_config_field(cfg, ["num_experts", "n_routed_experts", "num_local_experts"], 0)
     num_shared_experts = get_config_field(cfg, ["n_shared_experts", "num_shared_experts"], 0)
     num_dense_layers = get_config_field(cfg, ["num_dense_layers", "first_k_dense_replace"], 0)
-    is_moe = num_experts > 0
     # LatentMoE (e.g. Nemotron-3-Ultra): experts operate on a projected-down
     # latent dim with a 2-matrix (up+down) shape instead of standard 3-matrix
     # SwiGLU -- confirmed against real safetensors tensor names
@@ -172,6 +171,14 @@ def estimate_params(cfg: dict) -> ParamEstimate:
 
     hidden_size = cfg.get("hidden_size") or cfg.get("d_model")
     layer_pattern = get_config_field(cfg, ["layers_block_type", "hybrid_override_pattern"])
+    # When a pattern is present it's the authoritative source: some
+    # transformers AutoConfig classes (e.g. NemotronHConfig) carry a nonzero
+    # n_routed_experts class default even for configs that never set it, so
+    # num_experts > 0 alone would misclassify a dense pattern model as MoE.
+    if layer_pattern is not None:
+        is_moe = any(str(tok).lower() in ("e", "moe") for tok in layer_pattern)
+    else:
+        is_moe = num_experts > 0
     num_layers = cfg.get("num_hidden_layers") or cfg.get("n_layer") or cfg.get("num_layers")
     if num_layers is None and layer_pattern is not None:
         num_layers = len(layer_pattern)

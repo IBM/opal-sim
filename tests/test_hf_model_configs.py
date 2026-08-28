@@ -22,8 +22,6 @@ config dimensions alone, not real weight counts.
 """
 
 import pytest
-import transformers
-from packaging.version import Version
 
 from opal.llm_inference.config_loader import ModelConfigLoader, estimate_params
 from opal.llm_inference.opal_model import OpalModel
@@ -108,26 +106,8 @@ class TestMLAModel:
 
 
 class TestHybridMambaModel:
-    """Nemotron-H-8B-Base-8K: hybrid Mamba-2 + attention + MLP layers.
+    """Nemotron-H-8B-Base-8K: hybrid Mamba-2 + attention + MLP layers."""
 
-    transformers.AutoConfig (used by OpalModel.from_huggingface) currently
-    fails to load this config: installed transformers==5.4.0's own
-    NemotronHConfig._pattern_to_list() mapping is missing '-' (the MLP-only
-    layer character), even though the model's own hybrid_override_pattern
-    uses it -- a transformers library bug, not an opal one. Confirmed fixed
-    upstream in transformers>=5.16.1 (mapping there includes "-": "mlp").
-    xfail'd here rather than skipped so it starts failing loudly (as an
-    unexpected pass) once this environment upgrades transformers past that
-    version, as a reminder to lift the xfail.
-    """
-
-    KNOWN_BROKEN_TRANSFORMERS = Version(transformers.__version__) < Version("5.16.1")
-
-    @pytest.mark.xfail(
-        KNOWN_BROKEN_TRANSFORMERS,
-        reason="transformers<5.16.1 NemotronHConfig._pattern_to_list() has no '-' mapping (KeyError)",
-        raises=KeyError,
-    )
     def test_param_count_via_from_huggingface(self):
         model = OpalModel.from_huggingface("nvidia/Nemotron-H-8B-Base-8K")
         assert_within(model.total_params, 10.1e9, tol=0.05, label="total_params")
