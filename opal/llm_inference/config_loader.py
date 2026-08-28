@@ -22,6 +22,16 @@ from typing import Any, List, Optional
 
 from opal.llm_inference.opal_model import MoEParams
 
+
+class UnsupportedModelError(ValueError):
+    """Raised whenever a model config cannot be mapped to a supported
+    architecture family, or matches a family but is missing a field that
+    family's math depends on. A ValueError subclass so existing `except
+    ValueError` callers still catch it, but callers can also catch it
+    specifically to report "this model isn't supported" rather than a
+    generic parse error."""
+
+
 # --------------------------------------------------------------------------
 # Config field lookup
 # --------------------------------------------------------------------------
@@ -107,10 +117,40 @@ class ModelConfigLoader:
 # --------------------------------------------------------------------------
 
 
+# model_type -> family, for every model_type this porting effort has verified
+# end-to-end against real config.json fields and (where available) published
+# param counts. A model_type present here is trusted outright; a model_type
+# NOT present here is rejected outright (see detect_architecture) rather than
+# silently falling through to the field-presence heuristic below -- an
+# unrecognized model_type is exactly the case where guessing is unsafe.
+_FULL_ATTENTION_MODEL_TYPES = {
+    "llama",  # Llama-3.1-8B-Instruct: dense GQA
+    "granite",  # granite-3.3-8b-instruct, dense GQA (bundled model-configs)
+    "qwen3_moe",  # Qwen3-30B-A3B: MoE, full attention (no MLA)
+}
+_MLA_MODEL_TYPES = {
+    "deepseek_v3",  # DeepSeek-V3: MoE + MLA
+}
+_HYBRID_MAMBA_MOE_MODEL_TYPES = {
+    "nemotron_h",  # Nemotron-H-8B-Base-8K, Nemotron-3-Ultra: mamba+attention(+MoE-FFN)
+    "granitemoehybrid",  # Granite-4.0-H: mamba/attention + always-on MoE-FFN
+    "jamba",  # Jamba: mamba+attention+MoE-FFN on a fixed period, no pattern field
+}
+_KNOWN_MODEL_TYPES = _FULL_ATTENTION_MODEL_TYPES | _MLA_MODEL_TYPES | _HYBRID_MAMBA_MOE_MODEL_TYPES
+
+
 def detect_architecture(cfg: dict) -> str:
     """Returns one of: 'hybrid_mamba_moe', 'sparse_mla', 'mla',
-    'full_attention', via heuristic hallmark-field checks. Extend this if a
-    new model family doesn't fit these patterns."""
+    'full_attention'.
+
+    model_type is the primary signal: if present, it MUST be in one of the
+    allowlists above, or this raises UnsupportedModelError -- silently
+    falling through to the field-presence heuristic for an unrecognized
+    model_type is exactly how the Granite-4 'every layer is full attention'
+    bug happened. Only when model_type is missing entirely (e.g. a raw
+    text_config block with no top-level model_type) does the field-presence
+    heuristic run unguarded, since that's a legitimate gap in the allowlist
+    approach rather than a genuinely-unrecognized model."""
     cfg = effective_llm_config(cfg)
     model_type = str(cfg.get("model_type", "")).lower()
     architectures = [str(a).lower() for a in cfg.get("architectures", [])]
@@ -118,11 +158,31 @@ def detect_architecture(cfg: dict) -> str:
 
     has_mamba = (
         any("mamba" in t for t in tags)
-        or get_config_field(cfg, ["hybrid_override_pattern", "layers_block_type", "mamba_d_state", "ssm_state_size"])
+        or get_config_field(
+            cfg, ["hybrid_override_pattern", "layers_block_type", "layer_types", "mamba_d_state", "ssm_state_size"]
+        )
         is not None
     )
     has_mla = get_config_field(cfg, ["kv_lora_rank", "q_lora_rank", "mla_latent_dim"]) is not None
     has_sparse_attn = get_config_field(cfg, ["index_topk", "dsa_topk", "nsa_topk", "index_n_heads"]) is not None
+
+    if model_type:
+        if model_type not in _KNOWN_MODEL_TYPES:
+            raise UnsupportedModelError(
+                f"detect_architecture: model_type {model_type!r} is not a recognized "
+                f"architecture family. Known model_types: {sorted(_KNOWN_MODEL_TYPES)}. "
+                f"If this is a genuinely new family, verify its math against real "
+                f"config/weight shapes and add its model_type to the appropriate "
+                f"allowlist in config_loader.py rather than letting it fall through "
+                f"to a heuristic guess."
+            )
+        if model_type in _HYBRID_MAMBA_MOE_MODEL_TYPES:
+            return "hybrid_mamba_moe"
+        if model_type in _MLA_MODEL_TYPES:
+            return "sparse_mla" if has_sparse_attn else "mla"
+        # _FULL_ATTENTION_MODEL_TYPES: fall through to the field checks below
+        # only to distinguish 'mla'/'sparse_mla' should this model_type ever
+        # legitimately carry MLA fields too; today none of them do.
 
     if has_mamba:
         return "hybrid_mamba_moe"
@@ -149,8 +209,9 @@ def estimate_params(cfg: dict) -> ParamEstimate:
     """Layer-by-layer total/active param estimate from config dimensions
     alone (no weight download). Handles dense, MoE (with shared experts),
     LatentMoE, and Mamba/hybrid per-layer-pattern architectures -- validated
-    against real configs (DeepSeek-V3, Kimi-K2.x, GLM-5.x, Nemotron-H/Ultra)
-    to within a few percent of published total/active param counts.
+    against real configs (DeepSeek-V3, Kimi-K2.x, GLM-5.x, Nemotron-H/Ultra,
+    Granite-4.0-H) to within a few percent of published total/active param
+    counts.
 
     `active` is what LLMRooflineModel.active_params should be set to (drives
     FLOPs); `total` is the weight-footprint/capacity figure. For MoE
@@ -161,6 +222,7 @@ def estimate_params(cfg: dict) -> ParamEstimate:
     """
     cfg = effective_llm_config(cfg)
     model_type = str(cfg.get("model_type", "")).lower()
+    arch = detect_architecture(cfg)  # single source of truth for family
     num_experts = get_config_field(cfg, ["num_experts", "n_routed_experts", "num_local_experts"], 0)
     num_shared_experts = get_config_field(cfg, ["n_shared_experts", "num_shared_experts"], 0)
     num_dense_layers = get_config_field(cfg, ["num_dense_layers", "first_k_dense_replace"], 0)
@@ -170,15 +232,49 @@ def estimate_params(cfg: dict) -> ParamEstimate:
     moe_latent_size = cfg.get("moe_latent_size")
 
     hidden_size = cfg.get("hidden_size") or cfg.get("d_model")
-    layer_pattern = get_config_field(cfg, ["layers_block_type", "hybrid_override_pattern"])
-    # When a pattern is present it's the authoritative source: some
-    # transformers AutoConfig classes (e.g. NemotronHConfig) carry a nonzero
-    # n_routed_experts class default even for configs that never set it, so
-    # num_experts > 0 alone would misclassify a dense pattern model as MoE.
-    if layer_pattern is not None:
-        is_moe = any(str(tok).lower() in ("e", "moe") for tok in layer_pattern)
-    else:
+    layer_pattern = get_config_field(cfg, ["layers_block_type", "hybrid_override_pattern", "layer_types"])
+    # Two different hybrid conventions share these same pattern fields, and
+    # the split is a per-model_type fact (not re-derived from pattern shape
+    # alone, so there's one source of truth -- detect_architecture's
+    # allowlists -- rather than two independent heuristics that could drift):
+    #  - Nemotron-H/-Ultra (model_type nemotron_h): the pattern is exclusive
+    #    per layer -- mamba XOR attention XOR MoE-FFN-only (a distinct
+    #    '-'/'mlp' token marks the MoE-FFN-only layers). MoE-ness is read off
+    #    the pattern itself, not num_experts/n_routed_experts alone: some
+    #    transformers AutoConfig classes (e.g. NemotronHConfig) carry a
+    #    nonzero n_routed_experts class default even for configs that never
+    #    set it, which would otherwise misclassify a dense pattern model.
+    #  - Granite-4.0-H(-Hybrid) (model_type granitemoehybrid): the pattern is
+    #    only 2-way (mamba XOR attention for sequence-mixing) -- every layer,
+    #    whichever type, additionally runs its own always-on MoE-FFN block
+    #    afterward (confirmed against GraniteMoeHybridDecoderLayer.forward:
+    #    mamba/attention then unconditionally block_sparse_moe + shared_mlp).
+    #    Here num_local_experts alone is the right MoE signal, since the
+    #    pattern carries no dedicated FFN-only/MoE token to read instead.
+    if arch == "hybrid_mamba_moe" and model_type == "granitemoehybrid":
+        moe_on_every_layer = layer_pattern is not None and num_experts > 0
         is_moe = num_experts > 0
+        if layer_pattern is not None and any(
+            str(tok).lower() in ("e", "moe", "-", "mlp", "ffn") for tok in layer_pattern
+        ):
+            raise UnsupportedModelError(
+                f"estimate_params: model_type {model_type!r} is expected to use "
+                f"Granite-4-Hybrid's 2-way (mamba/attention only) pattern "
+                f"convention, but {layer_pattern!r} carries an explicit FFN/MoE "
+                f"token -- this contradicts the assumption moe_on_every_layer "
+                f"depends on for this model_type; verify which convention this "
+                f"config actually uses before proceeding"
+            )
+    else:
+        pattern_has_ffn_token = layer_pattern is not None and any(
+            str(tok).lower() in ("e", "moe", "-", "mlp", "ffn") for tok in layer_pattern
+        )
+        if pattern_has_ffn_token:
+            is_moe = any(str(tok).lower() in ("e", "moe") for tok in layer_pattern)
+            moe_on_every_layer = False
+        else:
+            is_moe = num_experts > 0
+            moe_on_every_layer = layer_pattern is not None and is_moe
     num_layers = cfg.get("num_hidden_layers") or cfg.get("n_layer") or cfg.get("num_layers")
     if num_layers is None and layer_pattern is not None:
         num_layers = len(layer_pattern)
@@ -204,7 +300,14 @@ def estimate_params(cfg: dict) -> ParamEstimate:
             pattern_token = str(layer_pattern[i]).lower()
             is_layer_mamba = pattern_token in ("m", "mamba")
             is_layer_attention = pattern_token in ("*", "attention", "attn")
-            # anything else: FFN-only layer, no sequence-mixing weights
+            is_layer_ffn_only = pattern_token in ("-", "mlp", "ffn")
+            if not (is_layer_mamba or is_layer_attention or is_layer_ffn_only):
+                raise ValueError(
+                    f"estimate_params: layer {i} has unrecognized pattern token "
+                    f"{pattern_token!r} in {layer_pattern!r} -- add it to the "
+                    f"mamba/attention/FFN-only alias sets instead of silently "
+                    f"guessing its layer type"
+                )
         elif "jamba" in model_type:
             attn_period = cfg.get("attn_layer_period", 8)
             is_layer_mamba = i % attn_period != 0
@@ -214,9 +317,22 @@ def estimate_params(cfg: dict) -> ParamEstimate:
             is_layer_attention = not is_layer_mamba
 
         if is_layer_mamba:
-            d_state = cfg.get("state_size") or cfg.get("ssm_state_size", 16)
-            d_conv = cfg.get("conv_kernel", 4)
-            expand = cfg.get("expand", 2)
+            # Mamba-2 state-space params: required-with-real-values for any
+            # model_type in the hybrid_mamba_moe allowlist, not defaulted --
+            # a silent default here is exactly the unverified-assumption
+            # pattern the Granite-4 bug fell into.
+            d_state = get_config_field(cfg, ["state_size", "ssm_state_size", "mamba_d_state"])
+            d_conv = get_config_field(cfg, ["conv_kernel", "mamba_d_conv"])
+            expand = get_config_field(cfg, ["expand", "mamba_expand"])
+            if d_state is None or d_conv is None or expand is None:
+                raise UnsupportedModelError(
+                    f"estimate_params: layer {i} is classified as a Mamba layer "
+                    f"(model_type={model_type!r}) but the config is missing one of "
+                    f"state_size/ssm_state_size/mamba_d_state, conv_kernel/"
+                    f"mamba_d_conv, or expand/mamba_expand -- cannot compute this "
+                    f"layer's param count without these, and a default value here "
+                    f"would be an unverified guess"
+                )
             d_inner = int(expand * hidden_size)
 
             in_proj = hidden_size * (d_inner * 2)
@@ -230,7 +346,14 @@ def estimate_params(cfg: dict) -> ParamEstimate:
 
             comm_params = in_proj + out_proj + conv_params + ssm_params
         elif is_layer_attention:
-            num_heads = cfg.get("num_attention_heads", 1)
+            num_heads = cfg.get("num_attention_heads")
+            if num_heads is None:
+                raise UnsupportedModelError(
+                    f"estimate_params: layer {i} is classified as an attention "
+                    f"layer (model_type={model_type!r}) but the config has no "
+                    f"num_attention_heads -- cannot compute this layer's param "
+                    f"count without it"
+                )
             num_kv = cfg.get("num_key_value_heads", num_heads)
             head_dim = cfg.get("head_dim", hidden_size // num_heads)
 
@@ -241,9 +364,15 @@ def estimate_params(cfg: dict) -> ParamEstimate:
         else:
             comm_params = 0  # FFN-only layer: no sequence-mixing weights
 
-        if pattern_token is not None:
-            # a published pattern is exclusive: each layer is exactly one of
-            # {mamba, attention, MoE-FFN}, confirmed against real tensor names
+        if moe_on_every_layer:
+            # Granite-4-Hybrid style: MoE-FFN runs on every layer regardless
+            # of its mamba/attention sequence-mixing type (additive, not
+            # exclusive) -- see moe_on_every_layer's definition above.
+            current_layer_is_moe = True
+        elif pattern_token is not None:
+            # Nemotron-H/-Ultra style: the pattern is exclusive -- each layer
+            # is exactly one of {mamba, attention, MoE-FFN}, confirmed
+            # against real tensor names.
             current_layer_is_moe = is_moe and not is_layer_mamba and not is_layer_attention
         else:
             current_layer_is_moe = is_moe and (i >= num_dense_layers)
@@ -252,11 +381,31 @@ def estimate_params(cfg: dict) -> ParamEstimate:
                 current_layer_is_moe = i % exp_period == 0
 
         if current_layer_is_moe:
-            k = cfg.get("num_experts_per_tok", 1)
+            k = cfg.get("num_experts_per_tok")
+            if k is None:
+                raise UnsupportedModelError(
+                    f"estimate_params: layer {i} is classified as MoE "
+                    f"(model_type={model_type!r}) but the config has no "
+                    f"num_experts_per_tok -- cannot compute active-vs-total params "
+                    f"without it"
+                )
+            expert_size = get_config_field(cfg, ["moe_intermediate_size", "intermediate_size"])
+            if expert_size is None:
+                raise UnsupportedModelError(
+                    f"estimate_params: layer {i} is classified as MoE "
+                    f"(model_type={model_type!r}) but the config has neither "
+                    f"moe_intermediate_size nor intermediate_size -- cannot compute "
+                    f"expert size without it, and hidden_size*4 here would be an "
+                    f"unverified guess"
+                )
             router = hidden_size * num_experts
+            # Granite-4-Hybrid's always-on shared_mlp is sized by
+            # shared_intermediate_size, not the n_shared_experts convention
+            # DeepSeek-V3/Kimi-K2.x/GLM-5.x use -- both are "always-active
+            # alongside the routed experts," just parameterized differently.
+            shared_intermediate_size = cfg.get("shared_intermediate_size")
 
             if moe_latent_size is not None:
-                expert_size = cfg.get("moe_intermediate_size") or cfg.get("intermediate_size") or (hidden_size * 4)
                 per_expert_params = 2 * moe_latent_size * expert_size
                 latent_proj_params = 2 * hidden_size * moe_latent_size
                 shared_expert_params = num_shared_experts * per_expert_params
@@ -265,12 +414,22 @@ def estimate_params(cfg: dict) -> ParamEstimate:
                 layer_active_mlp = always_active + k * per_expert_params
             else:
                 # standard 3-matrix SwiGLU experts on hidden_size (DeepSeek-V3/
-                # Kimi-K2.x/GLM-5.x convention), plus always-active shared experts
-                expert_size = cfg.get("moe_intermediate_size") or cfg.get("intermediate_size") or (hidden_size * 4)
+                # Kimi-K2.x/GLM-5.x/Granite-4-Hybrid convention), plus
+                # always-active shared experts/shared_mlp
                 per_expert_params = 3 * hidden_size * expert_size
-                shared_expert_params = num_shared_experts * per_expert_params
+                if shared_intermediate_size is not None:
+                    shared_expert_params = 3 * hidden_size * shared_intermediate_size
+                else:
+                    shared_expert_params = num_shared_experts * per_expert_params
                 layer_total_mlp = num_experts * per_expert_params + shared_expert_params + router
                 layer_active_mlp = k * per_expert_params + shared_expert_params + router
+
+            if moe_on_every_layer:
+                # comm_params (mamba or attention) already computed above --
+                # the MoE-FFN block is additive on top of it, not instead of it
+                layer_total_mlp += comm_params
+                layer_active_mlp += comm_params
+                comm_params = 0
 
             moe_layers += 1
             expert_params_per_layer = per_expert_params
@@ -281,7 +440,14 @@ def estimate_params(cfg: dict) -> ParamEstimate:
             layer_total_mlp = 0
             layer_active_mlp = 0
         else:
-            intermediate_size = cfg.get("intermediate_size", hidden_size * 4)
+            intermediate_size = cfg.get("intermediate_size")
+            if intermediate_size is None:
+                raise UnsupportedModelError(
+                    f"estimate_params: layer {i} is a plain dense MLP layer "
+                    f"(model_type={model_type!r}) but the config has no "
+                    f"intermediate_size -- hidden_size*4 here would be an "
+                    f"unverified guess"
+                )
             mlp_params = 3 * hidden_size * intermediate_size
             layer_total_mlp = mlp_params
             layer_active_mlp = mlp_params
@@ -348,9 +514,26 @@ def count_attention_layers(cfg: dict) -> int:
     only layers carry none). Using num_hidden_layers unconditionally
     overcounts KV-cache memory for hybrids -- 9x for Nemotron-3-Ultra."""
     cfg = effective_llm_config(cfg)
-    layer_pattern = get_config_field(cfg, ["layers_block_type", "hybrid_override_pattern"])
+    model_type = str(cfg.get("model_type", "")).lower()
+    layer_pattern = get_config_field(cfg, ["layers_block_type", "hybrid_override_pattern", "layer_types"])
+    num_hidden_layers = cfg.get("num_hidden_layers") or cfg.get("n_layer") or cfg.get("num_layers")
     if layer_pattern is None:
-        return cfg.get("num_hidden_layers") or cfg.get("n_layer") or cfg.get("num_layers")
+        if model_type in _HYBRID_MAMBA_MOE_MODEL_TYPES:
+            if model_type == "jamba":
+                # Jamba has no pattern field at all -- attention layers are
+                # every attn_layer_period-th layer, same period estimate_params
+                # uses (see its "jamba" in model_type branch).
+                attn_period = cfg.get("attn_layer_period", 8)
+                return sum(1 for i in range(num_hidden_layers) if i % attn_period == 0)
+            raise UnsupportedModelError(
+                f"count_attention_layers: model_type {model_type!r} is a hybrid "
+                f"Mamba/attention family but the config has none of "
+                f"layers_block_type/hybrid_override_pattern/layer_types -- "
+                f"treating every layer as full attention here would overcount "
+                f"KV-cache memory, and there's no verified per-layer pattern to "
+                f"derive the real count from"
+            )
+        return num_hidden_layers
     return sum(1 for tok in layer_pattern if str(tok).lower() in ("*", "attention", "attn"))
 
 
