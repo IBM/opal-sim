@@ -300,23 +300,19 @@ When a running request cannot fit in the batch (memory pressure):
 
 ### Timing Calculation
 
-For each batch:
+For each batch, `_calculate_batch_time` delegates entirely to whichever
+inference engine `worker.inference_params.model` selects (built once per
+simulation, shared by every worker — see [[LLM Inference Roofline Migration Plan]]):
 
 ```python
-# Prefill: account for already-processed tokens as "cached"
-for each prefill_request:
-    total_context = prompt_processed + tokens_to_process
-    cached_prefix = prompt_processed  # Already in GPU from prior chunks/KVC
-    prefill_time = gpu_model.get_prefill_latency(total_context, cached_prefix)
-    max_prefill_time = max(max_prefill_time, prefill_time)
-
-# Decode: batched latency calculation
-decode_batch = [(prompt_tokens + decode_tokens_generated) for each decode_request]
-decode_time = gpu_model.get_decode_latency_batch(decode_batch)
-
-# Batch time (parallel execution)
-batch_time = max(max_prefill_time, decode_time)
+batch_time = gpu_model.estimate(batch)["time_s"]
 ```
+
+The legacy engine's `estimate()` reproduces the same prefill/decode-latency
+split this section used to compute inline: `max(per-prefill-request prefill
+latency, batched decode latency)`. The newer roofline model family instead
+combines prefill and decode cost into one compute-vs-memory roofline pass —
+see the migration doc for the difference.
 
 ## Statistics Collected
 
