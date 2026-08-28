@@ -20,6 +20,19 @@
 
 ---
 
+## Development rules and contexts 
+
+You are a critical LLM/AI developer with deep expertise in python/simpy project. 
+You may be developing a new feature or porting some old code. 
+Flag anything which looks not right.
+When doing code development do not change or fix anything which is not DIRECTLY relevant. 
+Keep your changes localized for a human review. Do not arbitrarily format, and change code around. 
+In general, do not change anything in the existing opal code that isn't necessary for the port or development — no cleanup, no deletions, unless they directly contribute to the feature being ported.
+Check if there is a need to add a new unit test and propose adding it, update the corresponding wiki documentation for it in Testing.md (wiki). 
+Before every commit: run the existing test suite and a smoke-test simulation. Then always show me the exact list of staged files and wait for my explicit confirmation before running git commit — never commit unprompted.
+IMPORTANT: Compress not-obvious code comments only. For a more detailed explanation of higher-level concepts and rationale, add those details in the wiki/ documentation folder — check whether a doc already exists there or make a new .md file. In general, each higher-level component (folder of code) should have a corresponding md file. If confused about where something belongs, propose a location rather than skipping the writeup. Keep the actual code neat and clean, with only small comments with references to the wiki for further long explanation of what is happening. 
+
+
 ## Quick Start
 
 ### Environment Setup
@@ -615,6 +628,7 @@ git config core.hooksPath .githooks
 tests/
 ├── test_configs.py            # Parametrized config loading + run tests
 ├── test_hf_model_configs.py   # OpalModel param/MoE/KV-cache vs. real HF configs
+├── test_unsupported_models.py # UnsupportedModelError negative-path tests (llm_inference)
 ├── test_device.py             # I/O device model tests
 ├── test_rag_workload.py       # RAG workload tests
 ├── test_stage_statistics.py   # StageStatistics tests
@@ -658,6 +672,13 @@ def test_my_feature(tmp_path, monkeypatch):
     opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     opal.run(10)  # run for 10 virtual seconds
 ```
+
+### Documenting Tests in the Wiki
+
+Whenever you add a new test file (or a new class of tests within an existing
+file), update `wiki/Testing.md`'s test-by-test breakdown to describe what it
+covers. The wiki page is the human-readable index of test coverage; keep it
+in sync in the same commit/PR that adds the test, not as a follow-up.
 
 ---
 
