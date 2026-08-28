@@ -429,5 +429,5 @@ The `vllm_worker.py` module contains:
 ---
 
 **Author**: Opal Simulator Team  
-**Date**: 2026-05-11  
-**Version**: 3.0.0
+**Date**: 2026-08-28  
+**Version**: 3.1.0
