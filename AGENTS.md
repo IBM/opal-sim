@@ -40,26 +40,28 @@ git config core.hooksPath .githooks
 ### Run Basic Simulation
 ```bash
 # From project root (main.py self-extends sys.path; PYTHONPATH not required)
-python ./opal/main.py
+uv run opal/main.py
 
 # With custom config and graphs
-python ./opal/main.py -c ./configs/defaults.json -g
+uv run opal/main.py -c ./configs/defaults.json -g
 
 # With debug logging
-OPAL_LOG_LEVEL=DEBUG python ./opal/main.py
+OPAL_LOG_LEVEL=DEBUG uv run opal/main.py
 ```
+See [Running the Simulator](#running-the-simulator) for the full CLI reference.
 
 ### Run Tests
 ```bash
 # All tests
-pytest
+uv run pytest
+
+# Skip tests that hit the network (e.g. in CI/offline)
+uv run pytest -m "not network"
 
 # Specific test with verbose output
-OPAL_LOG_LEVEL=DEBUG pytest -s -v ./tests/test_configs.py
-
-# With output shown
-pytest -s -v
+OPAL_LOG_LEVEL=DEBUG uv run pytest -s -v ./tests/test_configs.py
 ```
+See [Testing](#testing) for test structure and how to write new tests.
 
 ---
 
@@ -259,18 +261,18 @@ opal-sim/
 ### Basic Execution
 ```bash
 # Default config (./configs/defaults.json)
-python ./opal/main.py
+uv run opal/main.py
 
 # Custom config with graphs
-python ./opal/main.py -c ./configs/defaults.json -g
+uv run opal/main.py -c ./configs/defaults.json -g
 
 # Specify output directory
-python ./opal/main.py -o ./my-results/
+uv run opal/main.py -o ./my-results/
 ```
 
 ### Command Line Arguments
 ```bash
-python ./opal/main.py --help
+uv run opal/main.py --help
 
 Options:
   -c, --config PATH                    Configuration file (default: configs/defaults.json)
@@ -290,7 +292,7 @@ OPAL_LOG_FORMAT=1
 OPAL_NO_COLOR=1
 
 # Example with all options
-OPAL_LOG_LEVEL=DEBUG OPAL_LOG_FORMAT=2 python ./opal/main.py
+OPAL_LOG_LEVEL=DEBUG OPAL_LOG_FORMAT=2 uv run opal/main.py
 ```
 
 ### Output Structure
@@ -629,16 +631,16 @@ Face at test time (no fixtures checked in -- per-model license) and is marked
 ### Running Tests
 ```bash
 # All tests (auto-discovered via pyproject.toml: python_files = ["test_*.py"])
-pytest
+uv run pytest
 
 # Skip tests that hit the network (e.g. in CI/offline)
-pytest -m "not network"
+uv run pytest -m "not network"
 
 # Run the config test explicitly
-pytest -s -v tests/test_configs.py
+uv run pytest -s -v tests/test_configs.py
 
 # With debug logging
-OPAL_LOG_LEVEL=DEBUG pytest -s -v tests/test_configs.py
+OPAL_LOG_LEVEL=DEBUG uv run pytest -s -v tests/test_configs.py
 ```
 
 ### Writing Tests
@@ -831,7 +833,7 @@ elif policy_lower == "mypolicy":
 
 1. **Enable debug logging:**
 ```bash
-OPAL_LOG_LEVEL=DEBUG python ./opal/main.py
+OPAL_LOG_LEVEL=DEBUG uv run opal/main.py
 ```
 
 2. **Add breakpoints:**
@@ -872,7 +874,7 @@ cat simulation-runs/sim-*/stage_0/opal_stats.json | jq
 ```bash
 # main.py self-extends sys.path, so this is normally not needed.
 # Set PYTHONPATH only if you invoke modules directly with `python -m ...`
-PYTHONPATH=`pwd`:$PYTHONPATH python ./opal/main.py
+PYTHONPATH=`pwd`:$PYTHONPATH uv run opal/main.py
 ```
 
 **2. SimPy Interrupt Errors**
@@ -913,7 +915,7 @@ grep -r "print(" opal/ --exclude-dir=__pycache__
 grep -r "yield " opal/worker/vllm_worker.py
 
 # Run tests
-pytest -s -v tests/test_configs.py
+uv run pytest -s -v tests/test_configs.py
 ```
 
 ### Performance Profiling
@@ -1012,7 +1014,7 @@ PYTHONPATH           - Must include project root
 **For AI Agents:** This document provides the essential context needed to understand and work with the OPAL simulator codebase. When making changes:
 
 1. Read relevant documentation in `wiki/` first
-2. Run tests after changes: `pytest -s -v -m "not network" tests/`
+2. Run tests after changes: `uv run pytest -s -v -m "not network" tests/`
 3. Format code with Black: `./sh-black-formatter.sh`
 4. Add co-author to commits
 5. Update this file if adding new patterns or components
