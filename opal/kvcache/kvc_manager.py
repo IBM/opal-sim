@@ -14,7 +14,7 @@ from simpy import Environment, Event
 import simpy
 from opal.core.events import KVCEvent, KVCEventType
 from opal.infra.io_model import AbstractDevice, CPUMemory, OpalIORequest, LocalNVMe, DistributedFS
-from opal.config.llm_model import OpalModelConfig
+from opal.llm_inference.opal_model import OpalModel
 from collections import OrderedDict
 
 import abc
@@ -867,7 +867,7 @@ class OpalKVCacheEngine:
         self.opal_env = opal_env
         self.opal_config = opal_config
         self.worker_id = worker_id
-        self._llm_model: OpalModelConfig = self.opal_env.llm_model
+        self._llm_model: OpalModel = self.opal_env.llm_model
         self.token_database = OpalTokenDatabase(self.opal_config["kvc"]["chunk_size"], self.__init_metadata())
         self.storage_manager = OpalStorageManager(self.opal_env, self.opal_config, self.worker_id)
         self.log = logging.getLogger(str(self))
