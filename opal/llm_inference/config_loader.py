@@ -268,7 +268,9 @@ def estimate_params(cfg: dict) -> ParamEstimate:
             moe_layers += 1
             expert_params_per_layer = per_expert_params
             experts_per_tok_val = k
-        elif pattern_token is not None:
+        elif pattern_token is not None and (is_layer_mamba or is_layer_attention):
+            # mamba/attention layers already have their own comm_params above;
+            # don't also add a generic MLP term for them
             layer_total_mlp = 0
             layer_active_mlp = 0
         else:
