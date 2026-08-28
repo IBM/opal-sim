@@ -10,7 +10,8 @@ import logging
 import time
 import numpy as np
 from opal.config.opal_config import OpalConfig
-from opal.config.llm_model import get_model
+from opal.llm_inference.opal_model import get_model
+from opal.llm_inference.inference_engine import build_inference_engine
 from opal.core.opal_registery import OpalRegistry
 from opal.router.router import Router
 from opal.utils.util import check_and_create_directory
@@ -36,6 +37,7 @@ class OpalSimulatorEnvironment:
         self.simpy_env = None
         self.log = None
         self.llm_model = None
+        self.inference_engine = None
         self.router = None
         self.workload_done = False
         self.initialize()
@@ -78,6 +80,12 @@ class OpalSimulatorEnvironment:
         if not "name" in self.opalConfig["model"]["model_params"]:
             # the "name" is not in the "model_param", then init it
             self.opalConfig["model"]["model_params"]["name"] = self.llm_model.get_model_name()
+
+        # Built once per simulation and shared by every worker (legacy
+        # GPUModel or the new llm_inference roofline model, per
+        # worker.inference_params.model) -- must exist before Router
+        # constructs workers, since each worker reads it in __init__.
+        self.inference_engine = build_inference_engine(self, self.opalConfig)
 
         # Step-1: Initialize gateway (which initializes workers)
         self.router = Router(self, self.opalConfig)
@@ -175,7 +183,7 @@ class OpalSimulatorEnvironment:
             while until is None or self.simpy_env.peek() < until:
                 self.simpy_env.step()
                 n += 1
-                if n % CHECK_EVERY_N_STEPS == 0: # check every N simulated steps if we have exceeded the wall clock cap
+                if n % CHECK_EVERY_N_STEPS == 0:  # check every N simulated steps if we have exceeded the wall clock cap
                     if time.perf_counter() - self.wall_clock_start >= self.max_wall_time_sec:
                         truncated = True
                         break
