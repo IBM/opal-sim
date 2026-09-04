@@ -79,6 +79,8 @@ from opal.infra.gpu_model import GPUModel
 from opal.kvcache.kvc_manager import OpalKVCacheEngine, OpalTokenDatabase
 from opal.kvcache.eviction_policy import resolve_apc_blocks, commit_apc_blocks, make_apc_policy
 from opal.config.llm_model import OpalModelConfig
+from opal.kvcache.kvc_manager import OpalKVCacheEngine
+from opal.llm_inference.opal_model import OpalModel
 from opal.core.request import LLMRequest
 from opal.utils.util import parse_bool, safe_process
 
@@ -285,8 +287,12 @@ class LLMWorkerVLLMScheduler:
         # KVC manager for prefix matching and retrieval
         self._kvc_manager = OpalKVCacheEngine(self.opalEnv, self.opalConfig, self.id)
 
-        # GPU model for timing calculations
-        self.gpu_model = GPUModel(opal_env, opal_config)
+        # GPU model for timing calculations (legacy roofline/synthetic
+        # engine or the new llm_inference roofline model family, per
+        # worker.inference_params.model) -- built once for the whole
+        # simulation in opal.core.environment.OpalSimulatorEnvironment,
+        # not per-worker; every worker just references the same instance.
+        self.gpu_model = self.opalEnv.inference_engine
         self.gpu_busy_time = 0
 
         # Output queues
@@ -296,7 +302,7 @@ class LLMWorkerVLLMScheduler:
         # Model configuration
         self.model = self.opalConfig["model"]["model_params"]["name"]
         self.gpu = self.opalConfig["worker"]["hw"]["gpu"]
-        self.model_config: OpalModelConfig = self.opalEnv.llm_model
+        self.model_config: OpalModel = self.opalEnv.llm_model
 
         # Initialize vLLM scheduler configuration
         self.scheduler_config = self._init_scheduler_config()
@@ -388,8 +394,10 @@ class LLMWorkerVLLMScheduler:
         # So effective memory for KV cache is tp_degree * single_gpu_memory
         total_gpu_memory_bytes = int(gpu_memory_gb * tp_degree * 1024**3)
 
-        model_params = self.model_config.model_params
-        model_size_bytes = model_params * 2
+        model_params = self.model_config.get_model_params()
+        # quantization-aware (e.g. 0.5 B/param for NVFP4), not a hardcoded
+        # bf16 assumption -- see opal.llm_inference.config_loader.guess_bytes_per_elem
+        model_size_bytes = model_params * self.model_config.weight_bytes_per_elem
 
         free_memory_bytes = total_gpu_memory_bytes - model_size_bytes
         block_size_bytes = self.block_size * self.model_config.key_value_bytes
@@ -1854,7 +1862,10 @@ class LLMWorkerVLLMScheduler:
         # self.log.debug(f"Starting async KVC retrieve for request {req.request_id}")
 
         # Retrieve the KV cache (this yields and simulates the move time)
-        moved_tensors = yield safe_process(self.simpy_env, self._kvc_manager.retrieve(req.hash_ids, num_prefix_tokens))
+        # tier_tokens maps each storage tier -> exact tokens served from it for this prefill.
+        moved_tensors, tier_tokens = yield safe_process(
+            self.simpy_env, self._kvc_manager.retrieve(req.hash_ids, num_prefix_tokens)
+        )
         """
         Original:     [T, T, T, F, F, F]
         Inverted:     [F, F, F, T, T, T]
@@ -1864,6 +1875,10 @@ class LLMWorkerVLLMScheduler:
         """
         actual_retrieved_tokens = int(((~moved_tensors).cumsum(axis=0) == 0).sum())
         self.log.debug(f"Fetched KVC tokens {actual_retrieved_tokens} for Request {req.request_id}")
+        # sanity check number of tokens recorded across all tiers in the tier_sum dict equals the total number of actual_retrieved_tokens
+        tier_sum = sum(tier_tokens.values())
+        if tier_sum != actual_retrieved_tokens:
+            self.log.warning(f"tier_tokens sum ({tier_sum}) != actual_retrieved_tokens ({actual_retrieved_tokens})")
 
         # the number of fetched KVC token are essentially prompt length that is now processed
         req.prompt_processed = actual_retrieved_tokens
@@ -1924,6 +1939,7 @@ class LLMWorkerVLLMScheduler:
         # Transition to READY state
         req.kvc_fetch_in_progress = False
         req.llm_request.stats.set_prefix_hit_tokens(actual_retrieved_tokens)
+        req.llm_request.stats.set_kvc_tier_tokens(tier_tokens)
 
         req.phase = RequestPhase.READY
         req.llm_request.stats._4_request_ready_time = self.simpy_env.now
@@ -1943,31 +1959,19 @@ class LLMWorkerVLLMScheduler:
         )
 
     def _calculate_batch_time(self, batch: BatchMetadata):
-        """Calculate execution time: max(prefill_latency, batched_decode_latency)."""
-        max_prefill_time = 0.0
-        max_decode_time = 0.0
-
-        for request in batch.prefill_requests:
-            tokens_to_process = batch.request_tokens.get(request.request_id, 0)
-
-            # the total size we have to target to process is so far + new, while pretending that the so_far is in the cache
-            prefill_time = self.gpu_model.get_prefill_latency(
-                request.prompt_processed + tokens_to_process, request.prompt_processed
-            )
-            max_prefill_time = max(max_prefill_time, prefill_time)
-
-        decode_batch = []
-        # batch decode
+        """Calculate execution time via the configured inference engine --
+        either the legacy a/b roofline + synthetic engine or the new
+        opal.llm_inference roofline model family, selected by
+        worker.inference_params.model (see
+        opal.llm_inference.inference_engine.build_inference_engine). Both
+        expose estimate(batch) -> {"time_s": ...}; how that time is
+        actually computed is entirely up to the engine."""
         for request in batch.decode_requests:
             # For running decode requests, always generate 1 token per step
             # For newly transitioned requests, this is already set in _update_request_states_and_stats
             assert (request.request_id in batch.request_tokens) and (batch.request_tokens.get(request.request_id) == 1)
-            decode_batch.append((request.prompt_tokens + request.decode_tokens_generated))
 
-        decode_time = self.gpu_model.get_decode_latency_batch(decode_batch)
-
-        batch_time = max(max_prefill_time, decode_time)
-        return batch_time
+        return self.gpu_model.estimate(batch)["time_s"]
 
     def _update_request_states_and_stats(self, batch: BatchMetadata, batch_time: float):
         """Advance request phases after batch execution and move prefill→decode within the batch."""
@@ -2102,12 +2106,22 @@ class LLMWorkerVLLMScheduler:
                 )
                 request.allocated_blocks = 0
 
+            # Attribute cache-miss prefill tokens (computed on the GPU) as a
+            # synthetic "Cache Miss" tier so the map sums to the full prompt length.
+            stats = request.llm_request.stats
+            tier_tokens = dict(stats.get_kvc_tier_tokens())
+            cache_miss_tokens = int(request.prompt_tokens - sum(tier_tokens.values()))
+            if cache_miss_tokens > 0:
+                tier_tokens["Cache Miss"] = cache_miss_tokens
+                stats.set_kvc_tier_tokens(tier_tokens)
+
             yield self.router_output_finished_req_queue.put(request.llm_request)
 
             self.log.info(
                 f"Request {request.request_id} retired on worker.{self.id}: "
                 f"prefill={request.prompt_tokens} tokens, "
-                f"decode={request.output_tokens} tokens, (prefix hit = {(request.llm_request.stats.get_prefix_hit_tokens() * 100 / request.prompt_tokens):.2f}%, sched steps = {request.llm_request.stats.get_scheduler_steps()})"
+                f"decode={request.output_tokens} tokens, (prefix hit = {(request.llm_request.stats.get_prefix_hit_tokens() * 100 / request.prompt_tokens):.2f}%, sched steps = {request.llm_request.stats.get_scheduler_steps()}), "
+                f"kvc tier tokens = {request.llm_request.stats.get_kvc_tier_tokens()}"
             )
 
 

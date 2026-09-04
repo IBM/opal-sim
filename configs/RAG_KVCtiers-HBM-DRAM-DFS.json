@@ -1,0 +1,100 @@
+{
+  "simulation": {
+    "simulation_time": -1.0,
+    "seed": 42,
+    "num_workers": 1,
+    "save_simulation_data": true,
+    "show_progress": true
+  },
+  "model": {
+    "model_params": {
+      "hf_url": "meta-llama/Llama-3.1-8B-Instruct"
+    }
+  },
+  "router": {
+    "router_params": {
+      "enable_scaling": false,
+      "max_queue_threshold": 4,
+      "scale_latency": 40,
+      "max_workers": 50,
+      "policy": "MaxPrefix",
+      "periodic_infra_update_collection_time": 30,
+      "max_event_batch_size": 64
+    }
+  },
+  "workload": {
+    "stages": [
+      {
+        "type": "RAGWorkload",
+        "workload_params": {
+          "num_documents": 10,
+          "document_size": 16384,
+          "system_prompt_size": 1024,
+          "docs_per_request": 4,
+          "output_tokens": 128,
+          "request_rate": 0.25,
+          "jitter": 0.0,
+          "total_requests": 1000,
+          "time_duration_sec": -1,
+          "max_concurrent_requests": 1
+        }
+      }
+    ]
+  },
+  "worker": {
+    "worker_params": {
+      "worker_local_queue_capacity": 1,
+      "periodic_infra_update_time": 30,
+      "kvcevent_coalesce_time": 30
+    },
+    "hw":{
+      "gpu": "H100",
+      "memory_gb": 80,
+      "tflops": 989.5,
+      "mem_bw_TBps" : 3.35,
+      "tp": 1
+    },
+    "vllm_params": {
+      "max_num_seqs": 256,
+      "max_num_batched_tokens": 8192,
+      "max_kvc_ready_requests": 8,
+      "chunked_prefill": true,
+      "block_size": 16,
+      "enable_gpu_apc": true,
+      "gpu_memory_utilization": 0.99,
+      "apc_eviction_policy": "lru",
+      "apc_lru_ttl": 0,
+      "hbm_eviction_threshold": 0.9,
+      "apc_eviction_check_interval_sec": 0.5
+    },
+    "inference_params": {
+      "model": "roofline",
+      "mean_latency_secs": 1.0,
+      "a": "4",
+      "b": "24"
+    }
+  },
+
+  "kvc": {
+    "kvc_tiers": ["CPUMemory", "DistributedFS"],
+    "chunk_size": 256,
+    "save_unfull_chunk": true,
+    "eviction_check_interval_sec": 2.0,
+
+    "CPUMemory": {
+      "bandwidth_GBps": 200,
+      "latency_nsec": 200,
+      "concurrency": 1000000,
+      "capacity_GB": 64,
+      "eviction_threshold": 0.80
+    },
+
+    "DistributedFS": {
+      "bandwidth_GBps": 350,
+      "latency_nsec": 100000,
+      "concurrency": 1024,
+      "capacity_GB": 172032,
+      "eviction_threshold": 0.90
+    }
+  }
+}

@@ -3,8 +3,6 @@
   - [What's new](#whats-new)
   - [Overview](#overview)
   - [Dependencies](#dependencies)
-    - [Option 1: Using conda (traditional approach)](#option-1-using-conda-traditional-approach)
-    - [Option 2: Using uv (faster alternative)](#option-2-using-uv-faster-alternative)
   - [Usage](#usage)
   - [What are simulation outputs](#what-are-simulation-outputs)
   - [Logging](#logging)
@@ -66,32 +64,12 @@ series = {EuroMLSys '26}
 ```
 
 ## Dependencies
-We recommend using a Python virtual environment to get started. You can use either **conda** or **uv** (a fast Python package installer and resolver). If you already have these dependencies installed in the global environment, that is also fine.
-
-### Option 1: Using conda (traditional approach)
-
-```shell
-conda create --name opal-dev python=3.11 --yes
-conda activate opal-dev
-```
-
-git clone and install the requirements
-
-```shell
-git clone git@github.com:IBM/opal-sim.git
-cd opal-sim
-python -m pip install -r ./requirements.txt
-```
-
-### Option 2: Using uv (faster alternative)
+We use [uv](https://docs.astral.sh/uv/) (a fast Python package installer and resolver) to manage the project's virtual environment and dependencies. `pyproject.toml`/`uv.lock` are the source of truth.
 
 First, install uv if you haven't already:
 ```shell
 # On macOS and Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Or using pip
-pip install uv
 ```
 
 Then clone and set up the project:
@@ -110,7 +88,13 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install -e .
 ```
 
-**Note:** uv is significantly faster than pip for dependency resolution and installation.
+**Note:** `.venv` has no `pip` binary; use `uv pip install ...` for pip-compatible package operations.
+
+**If you also have conda active** (e.g. your shell prompt shows `(base)` or another conda env name): conda is not used by this project, but activating `.venv` does not remove conda from your `PATH` -- whichever was activated *last* wins, and `pip`/`python3` can silently resolve to conda's copies instead of the project's. Check with:
+```shell
+which python3   # should print .../opal-sim/.venv/bin/python3
+```
+The most robust option is to skip activation entirely and prefix every command with `uv run`, e.g. `uv run pytest`, `uv run python3 ./opal/main.py` -- this always uses `.venv` regardless of what else is active in your shell.
 
 ## Usage 
 Here is the simplest run that should work out of the box 
@@ -241,7 +225,7 @@ Then open [http://127.0.0.1:9290](http://127.0.0.1:9290) in a browser. The form 
 When you click **Validate**, the UI posts the generated JSON to the server, which runs it through `OpalConfig().initialize()` — the same path used at simulation start. This catches two classes of problems early:
 
 1. **Malformed JSON** — syntax errors or structurally invalid input that would prevent the file from loading at all.
-2. **Missing stopping condition** — for non-trace workloads (i.e. anything other than `Trace` / `SC25Workload`), at least one of `simulation_time`, `total_requests`, or `time_duration_sec` must be set to a positive value. A config that omits all three would run forever; the validator rejects it with an error message.
+2. **Missing stopping condition** — for non-trace workloads (i.e. anything other than `Trace` / `SC25Workload`), at least one of `simulation_time`, `total_requests`, or `time_duration_sec` must be set to a positive value. A config that omits all three would run forever; the validator rejects it with an error message. (Note: these are all measured in *simulated* time / request counts. A separate `simulation.max_wall_time_sec` is also settable via the `--max-wall-time` CLI flag. This caps the run by *real* elapsed wall-clock time.)
 
 **What it does not check:** most field-level mistakes — wrong types, out-of-range numbers, missing required keys inside `model`/`router`/`kvc`/`worker` sections, or whether a trace file path actually exists on disk — are only caught when the simulator first reads those values during a run. So validation here is a useful early sanity check, not a guarantee that the simulation will complete successfully.
 
@@ -397,7 +381,7 @@ Open a pull request.
 Convention to follow: Black Python formatter. Install and run the formatter before sending the pull request 
 
 ```shell 
-python -m pip install black
+uv pip install black
 # once you are ready with the code, run from the top-level directory 
 sh-black-formatter.sh 
 ```

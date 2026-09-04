@@ -20,6 +20,7 @@ class StageStatistics:
         self.raw_latency_values = []
         self.raw_queuing_values = []
         self.raw_kvc_io_time = []
+        self.raw_kvc_hit_tokens = []
         self.raw_gpu_time = []
         self.raw_ttft_values = []
         self.raw_decode_values: List[List[int]] = []
@@ -31,6 +32,7 @@ class StageStatistics:
         self.finished_requests = 0
         self.queued_requests = 0
         self.failed_requests = 0
+        self.kvc_tier_tokens = defaultdict(int)
         self.per_unit_req_done = []
         self.per_unit_workers = []
         self.per_unit_gpu_utilization = []
@@ -51,6 +53,7 @@ class StageStatistics:
             "raw_latency_values": self.raw_latency_values,
             "raw_queuing_values": self.raw_queuing_values,
             "raw_kvc_io_time": self.raw_kvc_io_time,
+            "raw_kvc_hit_tokens": self.raw_kvc_hit_tokens,
             "raw_gpu_time": self.raw_gpu_time,
             "raw_ttft_values": self.raw_ttft_values,
             "raw_decode_values": self.raw_decode_values,
@@ -66,7 +69,7 @@ class StageStatistics:
             "stage_time_start": self.stage_time_start,
             "stage_time_end": self.stage_time_end,
             "input_output_tokens_sz": self.input_output_tokens_sz,
-            "raw_kvc_hit_tokens_per_tier": dict(self.raw_kvc_hit_tokens_per_tier),
+            "kvc_tier_tokens": dict(self.kvc_tier_tokens),
         }
 
     @classmethod
@@ -79,6 +82,7 @@ class StageStatistics:
         obj.raw_latency_values = data["raw_latency_values"]
         obj.raw_queuing_values = data["raw_queuing_values"]
         obj.raw_kvc_io_time = data["raw_kvc_io_time"]
+        obj.raw_kvc_hit_tokens = data.get("raw_kvc_hit_tokens", [])
         obj.raw_gpu_time = data["raw_gpu_time"]
         obj.raw_ttft_values = data["raw_ttft_values"]
         obj.raw_decode_values = data["raw_decode_values"]
@@ -89,7 +93,7 @@ class StageStatistics:
         obj.per_unit_gpu_utilization = data["per_unit_gpu_utilization"]
         obj.stage_time_end = data["stage_time_end"]
         obj.stage_time_start = data["stage_time_start"]
-        obj.raw_kvc_hit_tokens_per_tier = defaultdict(list, data.get("raw_kvc_hit_tokens_per_tier", {}))
+        obj.kvc_tier_tokens = defaultdict(int, data.get("kvc_tier_tokens", {}))
 
         # convert list -> numpy array
         obj.latencies = np.array(data["latencies"], dtype=float)
@@ -201,12 +205,13 @@ class StageStatistics:
         self.raw_queuing_values.append(stats.get_queue_time())
         self.raw_ttft_values.append(stats.get_ttft())
         self.raw_kvc_io_time.append(stats.get_kvc_fetch_time())
+        self.raw_kvc_hit_tokens.append(stats.get_prefix_hit_tokens())
         self.raw_gpu_time.append(stats.get_gpu_time())
         # self.debug_val.append(stats.start_gpu_time - stats.end_kvc_time)
         self.raw_decode_values.append(stats.get_decode_times_including_ttft())
         self.input_output_tokens_sz.append((request.input_length, request.output_length))
-        for tier_name, tokens in stats.get_kvc_hit_tokens_per_tier().items():
-            self.raw_kvc_hit_tokens_per_tier[tier_name].append(tokens)
+        for tier, n in stats.get_kvc_tier_tokens().items():
+            self.kvc_tier_tokens[tier] += n
 
     def add_total_time_in_system(self, breakdown: dict[str, float]):
         """Add a new request latency -- the total time it has spent in the system = routing + queuing + KVC + GPU"""
@@ -344,7 +349,7 @@ class StageStatistics:
         flat = tuple(1000 * float(x) if float(x) > 0 else float(x) for sub in val for x in sub)
         return flat
 
-    def __print(self, dict_label_value, label_width=40, value_width=15):
+    def __print(self, dict_label_value, label_width=40, value_width=15, log_file=None):
         """
         Expected input as a format of :
         "label1" : value1
@@ -352,12 +357,12 @@ class StageStatistics:
         ...
         """
         for label, value in dict_label_value.items():
-            if value is None:
-                print(f"{label}")
-            else:
-                print(f"{label:<{label_width}}: {value:>{value_width},.2f}")
+            line = f"{label}" if value is None else f"{label:<{label_width}}: {value:>{value_width},.2f}"
+            print(line)
+            if log_file is not None:
+                print(line, file=log_file)
 
-    def print_summary_results(self):
+    def print_summary_results(self, log_file=None):
         """The format should be something what vllm serve generates, something like:
 
         ============ Serving Benchmark Result ============
@@ -417,6 +422,20 @@ class StageStatistics:
         mean_ITL = res[6]
         median_ITL = res[7]
         P99_ITL = res[8]
+
+        # KVC per-tier token breakdown. Records raw tokens served per tier and percent of total prefill tokens.
+        kvc_tier_breakdown = {}
+        total_tier_tokens = sum(self.kvc_tier_tokens.values())
+        if total_tier_tokens > 0:
+            kvc_tier_breakdown["--------------KVC Tier Token Breakdown-------------"] = None
+            ordered_tiers = [t for t in sorted(self.kvc_tier_tokens) if t != "Cache Miss"]
+            if "Cache Miss" in self.kvc_tier_tokens:
+                ordered_tiers.append("Cache Miss")
+            for tier in ordered_tiers:
+                toks = self.kvc_tier_tokens[tier]
+                pct = toks * 100.0 / total_tier_tokens
+                kvc_tier_breakdown[f"{tier} ({pct:.2f}%)"] = toks
+
         final_stats = {
             "============ Serving Benchmark Result ============": None,
             "Note: negative values means that no sensible values can be calculated or just NYI. ": None,
@@ -443,39 +462,8 @@ class StageStatistics:
             "Mean ITL (ms)": mean_ITL,
             "Median ITL (ms)": median_ITL,
             "P99 ITL (ms)": P99_ITL,
+            **kvc_tier_breakdown,
             "*--------------------------------------------------": None,
         }
-        self.__print(final_stats)
-        self.print_kvc_tier_hit_rates()
 
-    def print_kvc_tier_hit_rates(self):
-        """Per-tier prefix-cache hit rate, ordered fastest (GPU/APC) -> slowest (DFS).
-
-        The rate is token-weighted: tier_tokens / total_input_tokens. Because
-        every matched token is attributed to exactly one tier (see
-        OpalKVCacheEngine.lookup), the per-tier rates form a clean split -- they
-        sum to the overall prefix-cache hit rate and never exceed 100%.
-        """
-        if not self.raw_kvc_hit_tokens_per_tier:
-            return
-        total_input_tokens = sum(i for i, _ in self.input_output_tokens_sz)
-        if total_input_tokens == 0:
-            return
-
-        # fastest -> slowest; unknown tiers sort last, alphabetically.
-        tier_order = ["apc", "CPUMemory", "LocalNVMe", "DistributedFS"]
-
-        def tier_sort_key(item):
-            name = item[0]
-            return (tier_order.index(name) if name in tier_order else len(tier_order), name)
-
-        tier_stats = {"---KVC Tokens Fetched per Tier (GPU->CPU->NVMe->DFS)---": None}
-        for tier_name, values in sorted(self.raw_kvc_hit_tokens_per_tier.items(), key=tier_sort_key):
-            arr = np.array(values, dtype=float)
-            total_tokens = float(arr.sum())
-            mean_tokens = float(arr.mean()) if arr.size else 0.0
-            tier_stats[f"  [{tier_name}] hit rate (%)"] = total_tokens / total_input_tokens * 100
-            tier_stats[f"  [{tier_name}] total tokens fetched"] = total_tokens
-            tier_stats[f"  [{tier_name}] mean tokens/request"] = mean_tokens
-        tier_stats["*--------------------------------------------------"] = None
-        self.__print(tier_stats)
+        self.__print(final_stats, log_file=log_file)

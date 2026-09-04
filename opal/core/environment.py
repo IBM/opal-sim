@@ -10,7 +10,8 @@ import logging
 import time
 import numpy as np
 from opal.config.opal_config import OpalConfig
-from opal.config.llm_model import get_model
+from opal.llm_inference.opal_model import get_model
+from opal.llm_inference.inference_engine import build_inference_engine
 from opal.core.opal_registery import OpalRegistry
 from opal.router.router import Router
 from opal.utils.util import check_and_create_directory
@@ -36,6 +37,7 @@ class OpalSimulatorEnvironment:
         self.simpy_env = None
         self.log = None
         self.llm_model = None
+        self.inference_engine = None
         self.router = None
         self.workload_done = False
         self.initialize()
@@ -50,6 +52,8 @@ class OpalSimulatorEnvironment:
 
     def initialize(self):
         self.simulation_time = self.opalConfig["simulation"]["simulation_time"]
+        # Optional real-time (wall-clock) cap in seconds. -1 / absent = disabled.
+        self.max_wall_time_sec = self.opalConfig["simulation"].get("max_wall_time_sec", -1)
         # Set up environment
         from simpy import Environment
 
@@ -76,6 +80,12 @@ class OpalSimulatorEnvironment:
         if not "name" in self.opalConfig["model"]["model_params"]:
             # the "name" is not in the "model_param", then init it
             self.opalConfig["model"]["model_params"]["name"] = self.llm_model.get_model_name()
+
+        # Built once per simulation and shared by every worker (legacy
+        # GPUModel or the new llm_inference roofline model, per
+        # worker.inference_params.model) -- must exist before Router
+        # constructs workers, since each worker reads it in __init__.
+        self.inference_engine = build_inference_engine(self, self.opalConfig)
 
         # Step-1: Initialize gateway (which initializes workers)
         self.router = Router(self, self.opalConfig)
@@ -133,26 +143,68 @@ class OpalSimulatorEnvironment:
             simulation_time = self.simulation_time
 
         # Start wall clock timer
-        wall_clock_start = time.perf_counter()
+        self.wall_clock_start = time.perf_counter()
 
-        # Run the simulation
-        if simulation_time == -1:
-            self.log.debug(f"Running the simulation until the end")
-            # until all events elapsed
-            self.simpy_env.run()
+        if not (self.max_wall_time_sec and self.max_wall_time_sec > 0):
+            # No wall-clock cap: run until the end of the simulation
+            if simulation_time == -1:
+                self.log.debug(f"Running the simulation until the end")
+                # run until all events elapsed
+                self.simpy_env.run()
+            else:
+                # No wall-clock cap: run for a finite number of virtual seconds
+                self.log.debug(f"Running the simulation for {simulation_time} virtual seconds")
+                self.simpy_env.run(until=simulation_time)
+                self.mark_done()
+                self.shutdown()
         else:
-            # for a finite time
-            self.log.debug(f"Running the simulation for {simulation_time} virtual seconds")
-            self.simpy_env.run(until=simulation_time)
-            self.mark_done()
-            self.shutdown()
+            # run with wall clock cap
+            self.log.debug(f"Running the simulation with a {self.max_wall_time_sec}s wall-clock cap")
+            self._run_with_wall_cap(simulation_time)
 
         # Calculate and log wall clock time
-        wall_clock_elapsed = time.perf_counter() - wall_clock_start
+        wall_clock_elapsed = time.perf_counter() - self.wall_clock_start
         self.log.info(
             f"Simulation completed in {wall_clock_elapsed:.2f} seconds (wall clock time) for {self.finish_time:.2f} virtual seconds | speed up {self.finish_time/wall_clock_elapsed:.2f}x"
         )
         return wall_clock_elapsed, self.finish_time
+
+    def _run_with_wall_cap(self, simulation_time):
+        """Drive the SimPy event loop manually so we can enforce a real-time cap.
+
+        Replicates ``env.run(until=...)`` while checking the wall clock every
+        ``CHECK_EVERY_N_STEPS`` events, adding zero extra events to the queue.
+        """
+        CHECK_EVERY_N_STEPS = 1000
+        until = None if simulation_time == -1 else simulation_time
+        n = 0
+        truncated = False
+        try:
+            while until is None or self.simpy_env.peek() < until:
+                self.simpy_env.step()
+                n += 1
+                if n % CHECK_EVERY_N_STEPS == 0:  # check every N simulated steps if we have exceeded the wall clock cap
+                    if time.perf_counter() - self.wall_clock_start >= self.max_wall_time_sec:
+                        truncated = True
+                        break
+        except simpy.core.EmptySchedule:
+            # no more events: the workload finished naturally
+            pass
+
+        if truncated:
+            elapsed = time.perf_counter() - self.wall_clock_start
+            self.log.warning(
+                f"WALL-TIME CAP: run truncated after {elapsed:.2f}s real time "
+                f"(limit {self.max_wall_time_sec}s) at virtual time {self.simpy_env.now:.2f}s"
+            )
+
+        # Graceful stop, unless a workload-completion / until path already marked us done.
+        if not self.are_we_done():
+            stats = self.workload_orchestrator.get_active_stage_stats()
+            if stats is not None:
+                stats.simulation_end = self.simpy_env.now
+            self.mark_done()
+            self.shutdown()
 
     def write_simulation_data(self):
         # simulation is now finished, ask workload orchestrator to give our results

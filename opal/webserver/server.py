@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from opal.opal_config import OpalConfig  # noqa: E402
+from opal.config.opal_config import OpalConfig  # noqa: E402
 
 INDEX_HTML_PATH = HERE / "index.html"
 

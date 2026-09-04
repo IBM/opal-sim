@@ -1,6 +1,7 @@
 {
   "simulation": {
     "simulation_time": -1.0,
+    "max_wall_time_sec": -1.0,
     "seed": 42,     
     "num_workers": 1,
     "save_simulation_data": true,

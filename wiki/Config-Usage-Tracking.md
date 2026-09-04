@@ -90,6 +90,10 @@ def main():
 
 ## Example Output
 
+Illustrative only — `kvc.Scale` and `storage.DFSBackend` below are sample
+names, not real sections in [[Configuration Simulation]]; the real tiers are
+`CPUMemory`/`LocalNVMe`/`DistributedFS` under `kvc`.
+
 ```
 ============================================================
 Configuration Usage Report

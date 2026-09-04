@@ -23,41 +23,39 @@ $ kill -USR1 `pidof python | tail -1`
 """
 
 
+DEFAULT_MODELLING_OUTPUT = os.path.join(PROJECT_ROOT, "simulation-runs")
+
+
 class OpalSimulator:
 
-    def __init__(self):
+    def __init__(self, config: OpalConfig, output_dir: str | None = None, plot_graphs: bool = False):
+        """
+        Build the simulator around a config. See from_config() and from_cmd_args()
+        for the alternative entry points.
+
+        FIXME: perhaps move the output_dir and plot_graphs also in the config file
+
+        Args:
+            config (OpalConfig): the simulation config.
+            output_dir (str, optional): where to put the run's files. Defaults to None,
+                i.e. DEFAULT_MODELLING_OUTPUT, as the config does not carry the -o flag.
+            plot_graphs (bool, optional): generate graphs or not. Defaults to False.
+        """
         # Enable debugging (optional)
         # TODO(atr) - when is this useful?
         # gc.set_debug(gc.DEBUG_STATS | gc.DEBUG_COLLECTABLE | gc.DEBUG_UNCOLLECTABLE)
 
-        self.parser = argparse.ArgumentParser(
-            description="Welcome to OpalSim, the ultimate GenAI simulator",
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        )
-        self.default_modelling_output = os.path.join(PROJECT_ROOT, "simulation-runs")
-        self.parser.add_argument(
-            "-o",
-            "--output-dir",
-            type=str,
-            help="directory to put files in",
-            default=self.default_modelling_output,
-            required=False,
-        )
-        default_sim_conf = DEFAULT_CONFIG_FILE
-        self.parser.add_argument(
-            "-c",
-            "--config",
-            help="Simulation configuration file",
-            default=default_sim_conf,
-            required=False,
-        )
-        self.parser.add_argument(
-            "-g",
-            "--graphs",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Generate graphs or not",
-        )
+        # keep __del__ safe if any of the initialization below raises
+        self.sim: OpalSimulatorEnvironment | None = None
+
+        self.config = config
+        self.plot_graphs = plot_graphs
+        self.default_modelling_output = DEFAULT_MODELLING_OUTPUT
+        self.parser = self._build_parser()
+
+        output_dir = output_dir if output_dir is not None else DEFAULT_MODELLING_OUTPUT
+        check_and_create_directory(output_dir, create_parents=True, fail_if_exists=True)
+        self.sim = OpalSimulatorEnvironment(config, output_dir=output_dir)
 
     def __del__(self):
         # dynamically enable it to track which config are never used
@@ -77,37 +75,81 @@ class OpalSimulator:
         #     print(f"Generation {i}: {gc.get_count()[i]} objects")
         print("=========")
 
+    @staticmethod
+    def _build_parser() -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            description="Welcome to OpalSim, the ultimate GenAI simulator",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        parser.add_argument(
+            "-o",
+            "--output-dir",
+            type=str,
+            help="directory to put files in",
+            default=DEFAULT_MODELLING_OUTPUT,
+            required=False,
+        )
+        parser.add_argument(
+            "-c",
+            "--config",
+            help="Simulation configuration file",
+            default=DEFAULT_CONFIG_FILE,
+            required=False,
+        )
+        parser.add_argument(
+            "-g",
+            "--graphs",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Generate graphs or not",
+        )
+        parser.add_argument(
+            "--max-wall-time",
+            type=float,
+            default=None,
+            help="Cap the run after this many real (wall-clock) seconds. Overrides simulation.max_wall_time_sec.",
+            required=False,
+        )
+        return parser
+
     def get_parser(self):
         return self.parser
 
-    def init_from_cmd_args(self):
-        _args = self.parser.parse_args()
-        self.plot_graphs = _args.graphs
-        args = vars(_args)
-        self.config = OpalConfig()
-        self.config.initialize(args["config"])
-        check_and_create_directory(args["output_dir"], create_parents=True, fail_if_exists=True)
-        self.sim = OpalSimulatorEnvironment(self.config, output_dir=args["output_dir"])
-
-    def init_from_config(self, config: OpalConfig, output_dir: str = None, plot_graphs: bool = False):
+    @classmethod
+    def from_cmd_args(cls, argv: list[str] | None = None) -> "OpalSimulator":
         """
-        initialize the simulator using a specific config file.
+        Build a simulator from command line arguments.
 
-        FIXME: perhaps move the output_dir and plot_graphs also in the config file
+        Args:
+            argv (list[str], optional): argument list to parse. Defaults to None,
+                which makes argparse read sys.argv.
+
+        Returns:
+            OpalSimulator: a simulator initialized from the parsed arguments.
+        """
+        args = vars(cls._build_parser().parse_args(argv))
+        config = OpalConfig()
+        config.initialize(args["config"])
+        if args["max_wall_time"] is not None:
+            config._config["simulation"]["max_wall_time_sec"] = args["max_wall_time"]
+        return cls(config, output_dir=args["output_dir"], plot_graphs=args["graphs"])
+
+    @classmethod
+    def from_config(
+        cls, config: OpalConfig, output_dir: str | None = None, plot_graphs: bool = False
+    ) -> "OpalSimulator":
+        """
+        Build a simulator using a specific config.
 
         Args:
             config (OpalConfig): _description_
             output_dir (str, optional): _description_. Defaults to None.
             plot_graphs (bool, optional): _description_. Defaults to False.
+
+        Returns:
+            OpalSimulator: a simulator initialized from the given config.
         """
-        # override the previous config
-        self.config = config
-        self.plot_graphs = plot_graphs
-        # when just initializing from the config, which does not contain the -o flag,
-        # we must provision it for the default
-        output_dir = output_dir if output_dir is not None else self.default_modelling_output
-        check_and_create_directory(output_dir, create_parents=True, fail_if_exists=True)
-        self.sim = OpalSimulatorEnvironment(self.config, output_dir)
+        return cls(config, output_dir=output_dir, plot_graphs=plot_graphs)
 
     def run(self, simulation_time: int | None = None):
         runtime, virtual_time = self.sim.run(simulation_time=simulation_time)
@@ -118,19 +160,28 @@ class OpalSimulator:
 
     def _process_per_stage(self):
         stats = self.sim.workload_orchestrator.stage_stats
-        for i, s in enumerate(stats):
-            print(f"===== stage_{i} =====")
-            # s.print_simend_stats()
-            s.print_summary_results()
-            if self.plot_graphs:
-                working_dir = os.path.join(
-                    self.sim.output_dir,
-                    self.sim.workload_orchestrator.get_stage_directory_name(i),
-                )
-                simend_plot(s, self.config, working_dir)
-            else:
-                print(f"Not plotting graphs as --no-graphs was set.")
-                print(f"If you want the final graphs, please specify -g / --graphs flag.")
+        log_path = os.path.join(self.sim.output_dir, "simulation.log") if self.sim.output_dir else None
+        log_file = open(log_path, "a") if log_path else None
+        try:
+            for i, s in enumerate(stats):
+                header = f"===== stage_{i} ====="
+                print(header)
+                if log_file is not None:
+                    print(header, file=log_file)
+                # s.print_simend_stats()
+                s.print_summary_results(log_file=log_file)
+                if self.plot_graphs:
+                    working_dir = os.path.join(
+                        self.sim.output_dir,
+                        self.sim.workload_orchestrator.get_stage_directory_name(i),
+                    )
+                    simend_plot(s, self.config, working_dir)
+                else:
+                    print(f"Not plotting graphs as --no-graphs was set.")
+                    print(f"If you want the final graphs, please specify -g / --graphs flag.")
+        finally:
+            if log_file is not None:
+                log_file.close()
 
     def _process_global_stats(self):
         # here we collect per-stage number and plot a global trend

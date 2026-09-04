@@ -1,5 +1,7 @@
 # vllm_worker.py - vLLM Scheduler Integration
 
+For the full config reference — every `worker.*` default as actually shipped in `configs/defaults.json` (which override some of this page's code-level fallback defaults, noted below) — see [[Configuration Simulation]].
+
 ## Overview
 
 `vllm_worker.py` implements an LLM worker that integrates vLLM v1's continuous batching scheduler with SimPy discrete event simulation. The module uses an **interrupt-driven architecture** (no polling) with a **persistent batch model** that accurately simulates real vLLM behavior including preemption, KV cache fetch rate-limiting, and tensor parallelism.
@@ -121,11 +123,11 @@ Single source of truth for request states:
 #### 2. **VLLMSchedulerConfig**
 Configuration parameters for scheduler:
 - `max_num_seqs`: Maximum sequences in a batch (default 256)
-- `max_num_batched_tokens`: Maximum tokens per batch (default 2048)
+- `max_num_batched_tokens`: Maximum tokens per batch (dataclass fallback 2048 if omitted entirely; `configs/defaults.json` ships 8192)
 - `chunked_prefill`: Enable chunked prefill (default True)
 - `max_model_len`: Maximum sequence length (from model config)
 - `gpu_memory_kvcache_bytes`: Available GPU memory for KV cache
-- `max_kvc_ready_requests`: Max KVC-fetching requests in waiting queue (default 4)
+- `max_kvc_ready_requests`: Max KVC-fetching requests in waiting queue (dataclass fallback 4 if omitted entirely; `configs/defaults.json` ships 8)
 - `lookahead_reqs`: Max waiting requests to scan when batch is non-empty (default 256)
 
 #### 3. **VLLMSchedulerRequest**
@@ -195,10 +197,10 @@ Add to your `sim_config/*.json`:
 | Parameter | Description | Default | Impact |
 |-----------|-------------|---------|--------|
 | `max_num_seqs` | Max sequences in a batch | 256 | Batch size limit |
-| `max_num_batched_tokens` | Max tokens per batch | 2048 | Token throughput & chunk size |
+| `max_num_batched_tokens` | Max tokens per batch | 8192 (`configs/defaults.json`; dataclass fallback 2048 if key omitted) | Token throughput & chunk size |
 | `chunked_prefill` | Enable chunked prefill | true | Large prompt handling |
 | `block_size` | Tokens per GPU memory block | 16 | Memory granularity |
-| `max_kvc_ready_requests` | Max KVC-fetching requests in waiting queue | 4 | KVC fetch rate-limiting |
+| `max_kvc_ready_requests` | Max KVC-fetching requests in waiting queue | 8 (`configs/defaults.json`; dataclass fallback 4 if key omitted) | KVC fetch rate-limiting |
 | `lookahead_reqs` | Max waiting requests scanned per rebuild | 256 | Batch rebuild scan depth |
 | `memory_gb` | GPU memory in GB | - | Total per-GPU memory |
 | `tp` | Tensor parallelism degree | 1 | Effective memory = tp * memory_gb |
@@ -300,23 +302,19 @@ When a running request cannot fit in the batch (memory pressure):
 
 ### Timing Calculation
 
-For each batch:
+For each batch, `_calculate_batch_time` delegates entirely to whichever
+inference engine `worker.inference_params.model` selects (built once per
+simulation, shared by every worker — see [[LLM Inference Roofline Migration Plan]]):
 
 ```python
-# Prefill: account for already-processed tokens as "cached"
-for each prefill_request:
-    total_context = prompt_processed + tokens_to_process
-    cached_prefix = prompt_processed  # Already in GPU from prior chunks/KVC
-    prefill_time = gpu_model.get_prefill_latency(total_context, cached_prefix)
-    max_prefill_time = max(max_prefill_time, prefill_time)
-
-# Decode: batched latency calculation
-decode_batch = [(prompt_tokens + decode_tokens_generated) for each decode_request]
-decode_time = gpu_model.get_decode_latency_batch(decode_batch)
-
-# Batch time (parallel execution)
-batch_time = max(max_prefill_time, decode_time)
+batch_time = gpu_model.estimate(batch)["time_s"]
 ```
+
+The legacy engine's `estimate()` reproduces the same prefill/decode-latency
+split this section used to compute inline: `max(per-prefill-request prefill
+latency, batched decode latency)`. The newer roofline model family instead
+combines prefill and decode cost into one compute-vs-memory roofline pass —
+see the migration doc for the difference.
 
 ## Statistics Collected
 
@@ -431,5 +429,5 @@ The `vllm_worker.py` module contains:
 ---
 
 **Author**: Opal Simulator Team  
-**Date**: 2026-05-11  
-**Version**: 3.0.0
+**Date**: 2026-08-28  
+**Version**: 3.1.0

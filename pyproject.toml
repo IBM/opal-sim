@@ -47,3 +47,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "network: test downloads data over the network (e.g. Hugging Face config.json); deselect with -m 'not network'",
+]

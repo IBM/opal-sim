@@ -1,6 +1,6 @@
 ## Running Workloads
 
-Opal uses a stage-based workload orchestration system. A simulation can define one or more workload stages that execute sequentially, each with its own type, parameters, and termination conditions.
+Opal uses a stage-based workload orchestration system. A simulation can define one or more workload stages that execute sequentially, each with its own type, parameters, and termination conditions. For the full config reference (defaults as shipped in `configs/defaults.json`, plus every other simulation section), see [[Configuration Simulation]].
 
 ### Architecture
 
@@ -22,6 +22,8 @@ The workload system has three layers:
 | `UniformReqRate` | `UniformReqRate` | Generates requests at a fixed rate (requests/sec). Prompt and output sizes are drawn uniformly at random from configurable min/max ranges. |
 | `ExponentialReqRate` | `ExponentialReqRate` | Same as `UniformReqRate` but inter-arrival times follow an exponential distribution with configurable jitter. |
 | `Trace` | `Trace` | Replays a JSONL trace file. Each line contains `timestamp`, `input_length`, `output_length`, and `hash_ids`. Requests are dispatched at the recorded timestamps. |
+| `otel` | `Otel` | Replays real captured agentic traffic from OpenTelemetry `gen_ai` traces (session/turn-structured, not flat rows like `Trace`). See [[OTel Trace Replay]] for its own parameter set. |
+| `RAGWorkload` | `RAGWorkload` | Synthetic retrieval-augmented-generation workload for exercising prefix-cache reuse across a document corpus. See [[RAG Workload]]. |
 | `SC25Workload` | `SC25Workload` | A specialized benchmark workload that runs a cold pass (unique prompts) followed by a warm pass (repeated prompts for 100% cache hit), used for KV-cache performance characterization. |
 
 ### Configuration

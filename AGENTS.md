@@ -1,6 +1,6 @@
 # AGENTS.md - Guide for AI Agents Working on OPAL
 
-**Last Updated:** 2026-05-11
+**Last Updated:** 2026-08-28
 **Purpose:** Essential information for AI agents (like Claude, GPT, etc.) working on the OPAL simulator codebase
 
 ---
@@ -19,6 +19,19 @@
 11. [Debugging Tips](#debugging-tips)
 
 ---
+
+## Development rules and contexts 
+
+You are a critical LLM/AI developer with deep expertise in python/simpy project. 
+You may be developing a new feature or porting some old code. 
+Flag anything which looks not right.
+When doing code development do not change or fix anything which is not DIRECTLY relevant. 
+Keep your changes localized for a human review. Do not arbitrarily format, and change code around. 
+In general, do not change anything in the existing opal code that isn't necessary for the port or development — no cleanup, no deletions, unless they directly contribute to the feature being ported.
+Check if there is a need to add a new unit test and propose adding it, update the corresponding wiki documentation for it in Testing.md (wiki). 
+Before every commit: run the existing test suite and a smoke-test simulation. Then always show me the exact list of staged files and wait for my explicit confirmation before running git commit — never commit unprompted.
+IMPORTANT: Compress not-obvious code comments only. For a more detailed explanation of higher-level concepts and rationale, add those details in the wiki/ documentation folder — check whether a doc already exists there or make a new .md file. In general, each higher-level component (folder of code) should have a corresponding md file. If confused about where something belongs, propose a location rather than skipping the writeup. Keep the actual code neat and clean, with only small comments with references to the wiki for further long explanation of what is happening. 
+
 
 ## Quick Start
 
@@ -40,26 +53,28 @@ git config core.hooksPath .githooks
 ### Run Basic Simulation
 ```bash
 # From project root (main.py self-extends sys.path; PYTHONPATH not required)
-python ./opal/main.py
+uv run opal/main.py
 
 # With custom config and graphs
-python ./opal/main.py -c ./configs/defaults.json -g
+uv run opal/main.py -c ./configs/defaults.json -g
 
 # With debug logging
-OPAL_LOG_LEVEL=DEBUG python ./opal/main.py
+OPAL_LOG_LEVEL=DEBUG uv run opal/main.py
 ```
+See [Running the Simulator](#running-the-simulator) for the full CLI reference.
 
 ### Run Tests
 ```bash
 # All tests
-pytest
+uv run pytest
+
+# Skip tests that hit the network (e.g. in CI/offline)
+uv run pytest -m "not network"
 
 # Specific test with verbose output
-OPAL_LOG_LEVEL=DEBUG pytest -s -v ./tests/test_configs.py
-
-# With output shown
-pytest -s -v
+OPAL_LOG_LEVEL=DEBUG uv run pytest -s -v ./tests/test_configs.py
 ```
+See [Testing](#testing) for test structure and how to write new tests.
 
 ---
 
@@ -85,41 +100,71 @@ pytest -s -v
 
 ## Code Structure
 
+The package is organized into subpackages by concern (not a flat `opal/*.py`
+layout):
+
 ```
 opal-sim/
 ├── opal/                          # Main package
 │   ├── __init__.py
 │   ├── main.py                    # Entry point
-│   ├── opal.py                    # OpalSimulator class
-│   ├── opal_base.py               # Base classes (NoDynamicAttributes)
-│   ├── environment.py             # OpalSimulatorEnvironment (SimPy env wrapper)
-│   ├── opal_config.py             # Configuration system (ConfigProxy)
-│   ├── opal_logging.py            # Logging utilities
-│   ├── opal_profile.py            # Performance profiling decorator
-│   ├── opal_registery.py          # OpalRegistry (worker singleton registry)
-│   ├── defaults.py                # Reserved for future default values
 │   │
-│   ├── vllm_worker.py             # ⭐ LLMWorkerVLLMScheduler (1700+ lines)
-│   ├── router.py                  # Router with policies
-│   ├── autoscaling.py             # Autoscaling logic
-│   ├── workload_orchestrator.py   # WorkloadOrchestrator (multi-stage)
-│   ├── kvc_manager.py             # KV cache: OpalStorageBackend, OpalStorageManager
-│   ├── kvbm.py                    # KV block manager
-│   ├── gpu_model.py               # GPUModel (roofline/synthetic inference)
-│   ├── io_model.py                # I/O: CPUMemory, LocalNVMe, DistributedFS devices
-│   ├── llm_model.py               # OpalModelConfig (HF or local config loading)
+│   ├── core/                      # Simulator core
+│   │   ├── opal.py                # OpalSimulator class
+│   │   ├── opal_base.py           # Base classes (NoDynamicAttributes)
+│   │   ├── environment.py         # OpalSimulatorEnvironment (SimPy env wrapper);
+│   │   │                          # builds self.llm_model + self.inference_engine
+│   │   ├── opal_registery.py      # OpalRegistry (worker singleton registry)
+│   │   ├── request.py             # LLMRequest, LLMRequestStats, IORequest
+│   │   ├── datatypes.py           # STR_DTYPE_TO_BYTES (dtype → byte-size map)
+│   │   └── events.py              # KVCEvent, SystemEvent, OpalInfraEvent
 │   │
-│   ├── request.py                 # LLMRequest, LLMRequestStats, IORequest
-│   ├── datatypes.py               # STR_DTYPE_TO_BYTES (dtype → byte-size map)
-│   ├── events.py                  # KVCEvent, SystemEvent, OpalInfraEvent
-│   ├── stage_statistics.py        # StageStatistics collection
-│   ├── plot.py                    # Plotting utilities
-│   ├── util.py                    # safe_process(), check_and_create_directory(), etc.
+│   ├── config/                    # Configuration system
+│   │   ├── opal_config.py         # OpalConfig, ConfigProxy (nested access + defaults)
+│   │   └── defaults.py            # Reserved for future default values
+│   │
+│   ├── worker/                    # vLLM worker + autoscaling
+│   │   ├── vllm_worker.py         # ⭐ LLMWorkerVLLMScheduler (1700+ lines)
+│   │   └── autoscaling.py         # AutoScaling logic
+│   │
+│   ├── router/
+│   │   └── router.py              # Router with 5 policies
+│   │
+│   ├── kvcache/                   # Distributed KV cache
+│   │   ├── kvc_manager.py         # OpalStorageBackend, OpalStorageManager, OpalTokenDatabase
+│   │   └── kvbm.py                # KVBM, OpalWorkerState (KV block manager)
+│   │
+│   ├── infra/                     # Infrastructure models
+│   │   ├── gpu_model.py           # Backward-compat shim -> llm_inference.legacy_gpu_model.GPUModel
+│   │   └── io_model.py            # I/O: CPUMemory, LocalNVMe, DistributedFS devices
+│   │
+│   ├── llm_inference/             # Model config loading + roofline/legacy timing engines
+│   │   ├── opal_model.py          # OpalModel, MoEParams, parse_opal_model_fields
+│   │   ├── config_loader.py       # ModelConfigLoader, detect_architecture, estimate_params
+│   │   ├── roofline_inference_model.py  # GPUConfig, LLMRooflineModel + 4 arch subclasses
+│   │   ├── legacy_gpu_model.py    # GPUModel (old a/b roofline + synthetic engine)
+│   │   ├── inference_model_factory.py   # ModelFactory: config.json -> concrete subclass
+│   │   └── inference_engine.py    # build_inference_engine(): picks legacy vs. new engine
 │   │
 │   ├── workloads/                 # Workload generators
 │   │   ├── abstract_workload.py   # AbstractWorkload base class
 │   │   ├── workload.py            # UniformReqRate, ExponentialReqRate, Trace
-│   │   └── sc25_blog.py           # SC25Workload
+│   │   ├── workload_orchestrator.py  # WorkloadOrchestrator (multi-stage)
+│   │   ├── sc25_blog.py           # SC25Workload
+│   │   ├── rag_workload.py        # RAG-style workload
+│   │   └── otel_tokenizer.py      # OTel agentic-trace replay support
+│   │
+│   ├── stats/
+│   │   ├── stage_statistics.py    # StageStatistics collection
+│   │   └── plot.py                # Plotting utilities
+│   │
+│   ├── utils/
+│   │   ├── util.py                # safe_process(), check_and_create_directory(), etc.
+│   │   ├── opal_logging.py        # Logging utilities
+│   │   └── opal_profile.py        # Performance profiling decorator
+│   │
+│   ├── webserver/
+│   │   └── server.py              # Config Builder UI (stdlib http.server, no deps)
 │   │
 │   └── regression-fitting/        # Model calibration (a, b parameters)
 │       ├── offline_calc_a_b.py
@@ -128,7 +173,8 @@ opal-sim/
 │
 ├── configs/                       # Configuration files
 │   ├── defaults.json              # Default configuration (local model dir)
-│   └── hf.json                    # Variant that pulls model config from Hugging Face
+│   ├── hf.json                    # Variant that pulls model config from Hugging Face
+│   └── RAG_KVCtiers-*.json        # RAG workload + KVC tiering variants
 │
 ├── model-configs/                 # Local model configurations
 │   └── granite-3.3-8b-instruct/
@@ -138,7 +184,12 @@ opal-sim/
 │   └── hello.jsonl                # Example trace
 │
 ├── tests/                         # Unit tests
-│   └── test_configs.py            # Parametrized config loading + run tests
+│   ├── test_configs.py            # Parametrized config loading + run tests
+│   ├── test_hf_model_configs.py   # OpalModel param/MoE/KV-cache vs. real HF configs (network)
+│   ├── test_device.py             # I/O device model tests
+│   ├── test_rag_workload.py       # RAG workload tests
+│   ├── test_stage_statistics.py   # StageStatistics tests
+│   └── test_wall_clock_cap.py     # max_wall_time_sec cap tests
 │
 ├── wiki/                          # Documentation (cloned from GitHub wiki)
 │   ├── Configuration-Simulation.md
@@ -148,6 +199,10 @@ opal-sim/
 │   ├── Router.md
 │   ├── Worker.md
 │   ├── Workload-generation.md
+│   ├── RAG-Workload.md
+│   ├── OTel-Trace-Replay.md
+│   ├── LLM-Model-Roofline-Analysis.md  # opal.llm_inference: model param/FLOPs/KV-cache math
+│   ├── LLM-Inference-Roofline-Migration-Plan.md  # opal.llm_inference: migration rationale
 │   ├── Running.md
 │   ├── Running-Workloads.md
 │   ├── Install-Requirements.md
@@ -162,7 +217,7 @@ opal-sim/
 ├── simulation-runs/               # Output directory (gitignored)
 │   └── sim-YYYY-MM-DD_HH_MM_SS/
 │
-├── requirements.txt               # Python dependencies
+├── requirements.txt               # Python dependencies (legacy; uv/pyproject.toml is the source of truth)
 ├── pyproject.toml                 # Project metadata & pytest config
 ├── sh-black-formatter.sh          # Code formatter script
 ├── AGENTS.md                      # This file
@@ -171,30 +226,44 @@ opal-sim/
 
 ### Key Files to Understand
 
-1. **opal/vllm_worker.py** (1700+ lines)
+1. **opal/worker/vllm_worker.py** (1700+ lines)
    - `LLMWorkerVLLMScheduler` class - core vLLM worker implementation
    - Interrupt-driven scheduling loop (`_vllm_scheduling_loop`)
    - Batch building and GPU memory management
-   - KV cache integration
+   - KV cache integration; timing via `self.gpu_model.estimate(batch)["time_s"]`
+     (`self.gpu_model` is `opal_env.inference_engine`, shared across workers)
 
-2. **opal/router.py** (~280 lines)
+2. **opal/router/router.py** (~280 lines)
    - `Router` class with 5 policies: RoundRobin, LeastLoaded, Random, MaxPrefix, Balanced
    - Worker autoscaling triggers
 
-3. **opal/kvc_manager.py** (~1070 lines)
+3. **opal/kvcache/kvc_manager.py** (~1070 lines)
    - `OpalStorageBackend` - per-tier storage simulation
    - `OpalStorageManager` - tiering logic across CPUMemory, LocalNVMe, DistributedFS
    - `OpalTokenDatabase` - prefix-based KV cache lookup (chunked)
 
-4. **opal/gpu_model.py**
-   - `GPUModel` class with two inference engines: `roofline` (analytical) and `synthetic` (fixed latency)
-   - Roofline uses model params (a, b) for prefill/decode timing
+4. **opal/llm_inference/** - model config loading + timing engines
+   - `OpalModel` (`opal_model.py`) - the shared "what is this model" representation:
+     dimension/dtype/KV-cache accessors, total/active param counts
+   - `config_loader.estimate_params()` - dense/MoE/MLA/hybrid-Mamba param estimation
+     from config dimensions alone; see `wiki/LLM-Model-Roofline-Analysis.md` for the
+     full conceptual writeup
+   - `LLMRooflineModel` (`roofline_inference_model.py`) and its 4 architecture
+     subclasses (`FullAttention`/`MLA`/`SparseAttention`/`HybridMambaMoE`) - the new
+     config-dimension-driven timing engine
+   - `legacy_gpu_model.GPUModel` - the original `a`/`b`-coefficient roofline +
+     synthetic engine, still the default (`worker.inference_params.model: "roofline"`)
+   - `build_inference_engine()` (`inference_engine.py`) - picks legacy vs. new engine
+     per `worker.inference_params.model`; built once per simulation as
+     `opal_env.inference_engine`
+   - `opal/infra/gpu_model.py` is now just a backward-compat shim re-exporting
+     `GPUModel` from `legacy_gpu_model`
 
-5. **opal/util.py**
+5. **opal/utils/util.py**
    - `safe_process()` - SimPy process wrapper with error handling
    - `check_and_create_directory()`, `get_with_timeout()`, `parse_bandwidth()`
 
-6. **opal/opal_config.py**
+6. **opal/config/opal_config.py**
    - `OpalConfig` - loads JSON config
    - `ConfigProxy` - nested access with default fallback and `**` unpacking support
 
@@ -205,18 +274,18 @@ opal-sim/
 ### Basic Execution
 ```bash
 # Default config (./configs/defaults.json)
-python ./opal/main.py
+uv run opal/main.py
 
 # Custom config with graphs
-python ./opal/main.py -c ./configs/defaults.json -g
+uv run opal/main.py -c ./configs/defaults.json -g
 
 # Specify output directory
-python ./opal/main.py -o ./my-results/
+uv run opal/main.py -o ./my-results/
 ```
 
 ### Command Line Arguments
 ```bash
-python ./opal/main.py --help
+uv run opal/main.py --help
 
 Options:
   -c, --config PATH                    Configuration file (default: configs/defaults.json)
@@ -236,7 +305,7 @@ OPAL_LOG_FORMAT=1
 OPAL_NO_COLOR=1
 
 # Example with all options
-OPAL_LOG_LEVEL=DEBUG OPAL_LOG_FORMAT=2 python ./opal/main.py
+OPAL_LOG_LEVEL=DEBUG OPAL_LOG_FORMAT=2 uv run opal/main.py
 ```
 
 ### Output Structure
@@ -264,6 +333,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 {
   "simulation": {
     "simulation_time": -1.0,       // -1 = run until workload completes
+    "max_wall_time_sec": -1.0,     // -1 = no real-time cap; else stop after N wall-clock seconds
     "seed": 42,
     "num_workers": 1,
     "save_simulation_data": true,
@@ -369,6 +439,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 
 **Simulation:**
 - `simulation_time`: Virtual seconds to run (-1 = until workload done)
+- `max_wall_time_sec`: Real (wall-clock) seconds cap (-1 = disabled); overridable via `--max-wall-time` CLI flag
 - `seed`: Random seed for reproducibility
 - `num_workers`: Initial worker count
 
@@ -391,7 +462,7 @@ simulation-runs/sim-2026-04-02_14_30_45/
 
 ## Key Components
 
-### 1. LLMWorkerVLLMScheduler (opal/vllm_worker.py)
+### 1. LLMWorkerVLLMScheduler (opal/worker/vllm_worker.py)
 
 **Main Process:** `_vllm_scheduling_loop()`
 - Interrupt-driven architecture (no polling loops)
@@ -433,7 +504,7 @@ def _build_batch():
 - `yield from self._scheduler_step()` - Inline execution, interrupt control
 - `yield safe_process(env, coroutine())` - Separate process, isolation
 
-### 2. Router (opal/router.py)
+### 2. Router (opal/router/router.py)
 
 **Routing Policies (case-insensitive in config):**
 - `Random`: Random worker selection
@@ -447,7 +518,7 @@ def _build_batch():
 - Adds workers when threshold exceeded
 - Scale-up latency configurable (`scale_latency`)
 
-### 3. KVC Manager (opal/kvc_manager.py)
+### 3. KVC Manager (opal/kvcache/kvc_manager.py)
 
 **Key Classes:**
 - `OpalStorageBackend`: Per-tier storage simulation (bandwidth, latency, concurrency, capacity)
@@ -465,7 +536,7 @@ def _build_batch():
 
 Each tier is configured with: `bandwidth_GBps`, `latency_nsec`, `concurrency`, `capacity_GB`
 
-### 4. I/O Model (opal/io_model.py)
+### 4. I/O Model (opal/infra/io_model.py)
 
 **Device Classes (inherit from `AbstractDevice`):**
 - `CPUMemory`: CPU DRAM device simulation
@@ -474,6 +545,35 @@ Each tier is configured with: `bandwidth_GBps`, `latency_nsec`, `concurrency`, `
 
 Each device models bandwidth sharing among concurrent requests and minimum latency.
 
+### 5. LLM Inference / Roofline Models (opal/llm_inference/)
+
+**Key Classes:**
+- `OpalModel` (`opal_model.py`) - config-derived model representation: dimensions,
+  dtype, total/active params, KV-cache byte footprint
+- `LLMRooflineModel` (`roofline_inference_model.py`, abstract base of
+  `OpalModel`) - FLOPs/bytes -> `estimate(batch) -> {"time_s": ...}` via
+  `max(compute_time, memory_time)`; 4 subclasses specialize only the attention
+  term: `FullAttentionRooflineModel`, `MLAAttentionRooflineModel`,
+  `SparseAttentionRooflineModel`, `HybridMambaMoERooflineModel`
+- `legacy_gpu_model.GPUModel` - original `a`/`b`-coefficient roofline +
+  `synthetic` fixed-latency engine; still the default engine
+- `ModelFactory` (`inference_model_factory.py`) - picks a concrete
+  `LLMRooflineModel` subclass from `config_loader.detect_architecture()`
+- `build_inference_engine(opal_env, opal_config)` (`inference_engine.py`) -
+  reads `worker.inference_params.model` (`"llm_inference"` -> new engine,
+  else -> legacy `GPUModel`); called once in
+  `OpalSimulatorEnvironment.initialize()`, stored as `opal_env.inference_engine`
+
+**Operations:**
+- `config_loader.estimate_params(cfg)` - dense/MoE/MLA/hybrid-Mamba total/
+  active param estimate from config dimensions alone (no weight download)
+- `config_loader.kv_cache_dim_per_layer(cfg, hidden)` - K+V elements per
+  token per attention layer (GQA formula, or MLA's compressed-latent formula)
+
+See `wiki/LLM-Model-Roofline-Analysis.md` for the full conceptual writeup of
+each architecture family's math, and
+`wiki/LLM-Inference-Roofline-Migration-Plan.md` for the migration rationale.
+
 ---
 
 ## Development Workflow
@@ -481,7 +581,7 @@ Each device models bandwidth sharing among concurrent requests and minimum laten
 ### Code Formatting
 ```bash
 # Install black
-pip install black
+uv pip install black
 
 # Format code (required before PR)
 ./sh-black-formatter.sh
@@ -526,40 +626,59 @@ git config core.hooksPath .githooks
 ### Test Structure
 ```
 tests/
-└── test_configs.py            # Parametrized config loading + run tests
+├── test_configs.py            # Parametrized config loading + run tests
+├── test_hf_model_configs.py   # OpalModel param/MoE/KV-cache vs. real HF configs
+├── test_unsupported_models.py # UnsupportedModelError negative-path tests (llm_inference)
+├── test_device.py             # I/O device model tests
+├── test_rag_workload.py       # RAG workload tests
+├── test_stage_statistics.py   # StageStatistics tests
+└── test_wall_clock_cap.py     # max_wall_time_sec cap tests
 ```
 
-The test is parametrized over every `*.json` file in `configs/`, so adding a new
-config file automatically adds a new test case.
+`test_configs.py` is parametrized over every `*.json` file in `configs/`, so
+adding a new config file automatically adds a new test case.
+
+`test_hf_model_configs.py` downloads real `config.json` files from Hugging
+Face at test time (no fixtures checked in -- per-model license) and is marked
+`pytest.mark.network` (registered in `pyproject.toml`).
 
 ### Running Tests
 ```bash
 # All tests (auto-discovered via pyproject.toml: python_files = ["test_*.py"])
-pytest
+uv run pytest
+
+# Skip tests that hit the network (e.g. in CI/offline)
+uv run pytest -m "not network"
 
 # Run the config test explicitly
-pytest -s -v tests/test_configs.py
+uv run pytest -s -v tests/test_configs.py
 
 # With debug logging
-OPAL_LOG_LEVEL=DEBUG pytest -s -v tests/test_configs.py
+OPAL_LOG_LEVEL=DEBUG uv run pytest -s -v tests/test_configs.py
 ```
 
 ### Writing Tests
 ```python
 import pytest
 from pathlib import Path
-from opal.opal import OpalSimulator
-from opal.opal_config import OpalConfig
+from opal.core.opal import OpalSimulator
+from opal.config.opal_config import OpalConfig
 
 def test_my_feature(tmp_path, monkeypatch):
     """Test that loads a config, runs the sim for a short time."""
     monkeypatch.chdir(Path(__file__).resolve().parent.parent)
     config = OpalConfig()
     config.initialize("./configs/defaults.json")
-    opal = OpalSimulator()
-    opal.init_from_config(config=config, output_dir=str(tmp_path))
+    opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     opal.run(10)  # run for 10 virtual seconds
 ```
+
+### Documenting Tests in the Wiki
+
+Whenever you add a new test file (or a new class of tests within an existing
+file), update `wiki/Testing.md`'s test-by-test breakdown to describe what it
+covers. The wiki page is the human-readable index of test coverage; keep it
+in sync in the same commit/PR that adds the test, not as a follow-up.
 
 ---
 
@@ -621,7 +740,7 @@ except simpy.Interrupt:
     pass
 ```
 
-**Refer to `opal/util.py` for the `safe_process` implementation and inline documentation.**
+**Refer to `opal/utils/util.py` for the `safe_process` implementation and inline documentation.**
 
 ### 3. Configuration Access
 
@@ -640,12 +759,12 @@ if "optional_param" in self.config["section"]:
 ### 4. Logging
 
 ```python
-from opal.opal_logging import get_logger
+import logging
 
 class MyClass:
     def __init__(self):
-        self.log = get_logger(self.__class__.__name__)
-    
+        self.log = logging.getLogger(self.__class__.__name__)
+
     def my_method(self):
         self.log.debug("Debug message")
         self.log.info("Info message")
@@ -706,7 +825,7 @@ class MyWorkload(AbstractWorkload):
 
 ### Adding a New Routing Policy
 
-1. Add method to `Router` class in `opal/router.py`:
+1. Add method to `Router` class in `opal/router/router.py`:
 ```python
 def _policy_my_policy(self, req: LLMRequest | None = None):
     """My custom routing policy — returns a worker"""
@@ -735,7 +854,7 @@ elif policy_lower == "mypolicy":
 
 1. **Enable debug logging:**
 ```bash
-OPAL_LOG_LEVEL=DEBUG python ./opal/main.py
+OPAL_LOG_LEVEL=DEBUG uv run opal/main.py
 ```
 
 2. **Add breakpoints:**
@@ -776,7 +895,7 @@ cat simulation-runs/sim-*/stage_0/opal_stats.json | jq
 ```bash
 # main.py self-extends sys.path, so this is normally not needed.
 # Set PYTHONPATH only if you invoke modules directly with `python -m ...`
-PYTHONPATH=`pwd`:$PYTHONPATH python ./opal/main.py
+PYTHONPATH=`pwd`:$PYTHONPATH uv run opal/main.py
 ```
 
 **2. SimPy Interrupt Errors**
@@ -787,8 +906,7 @@ PYTHONPATH=`pwd`:$PYTHONPATH python ./opal/main.py
 **3. Configuration Errors**
 ```python
 # Check config loading
-sim = OpalSimulator()
-sim.init_from_config(config)
+sim = OpalSimulator.from_config(config)
 print(json.dumps(sim.config._config, indent=2))
 ```
 
@@ -815,17 +933,17 @@ grep -r "FIXME" opal/
 grep -r "print(" opal/ --exclude-dir=__pycache__
 
 # Find all yield statements in the worker
-grep -r "yield " opal/vllm_worker.py
+grep -r "yield " opal/worker/vllm_worker.py
 
 # Run tests
-pytest -s -v tests/test_configs.py
+uv run pytest -s -v tests/test_configs.py
 ```
 
 ### Performance Profiling
 
-Use the built-in `opal/opal_profile.py` decorator:
+Use the built-in `opal/utils/opal_profile.py` decorator:
 ```python
-from opal.opal_profile import profile_function
+from opal.utils.opal_profile import profile_function
 
 # Wrap any callable — prints top 20 cumulative-time functions
 profile_function(lambda: sim.run())
@@ -845,6 +963,8 @@ profile_function(lambda: sim.run())
 - **Running:** `wiki/Running.md`, `wiki/Running-Workloads.md`
 - **Config Tracking:** `wiki/Config-Usage-Tracking.md`
 - **Examples:** `wiki/Examples.md`
+- **LLM Model Roofline Analysis:** `wiki/LLM-Model-Roofline-Analysis.md`
+- **LLM Inference Roofline Migration Plan:** `wiki/LLM-Inference-Roofline-Migration-Plan.md`
 
 ### External References
 - **Wiki (online):** https://github.com/IBM/opal-sim/wiki
@@ -859,18 +979,21 @@ profile_function(lambda: sim.run())
 ### File Locations
 ```
 Entry point:           opal/main.py
-Main simulator:        opal/opal.py
-vLLM worker:           opal/vllm_worker.py
-Router:                opal/router.py
-Autoscaling:           opal/autoscaling.py
-Workload orchestrator: opal/workload_orchestrator.py
-KVC manager:           opal/kvc_manager.py
-KV block manager:      opal/kvbm.py
-GPU model:             opal/gpu_model.py
-I/O model:             opal/io_model.py
-LLM model:             opal/llm_model.py
-Config system:         opal/opal_config.py
-Utilities:             opal/util.py
+Main simulator:        opal/core/opal.py
+Environment:           opal/core/environment.py
+vLLM worker:           opal/worker/vllm_worker.py
+Router:                opal/router/router.py
+Autoscaling:           opal/worker/autoscaling.py
+Workload orchestrator: opal/workloads/workload_orchestrator.py
+KVC manager:           opal/kvcache/kvc_manager.py
+KV block manager:      opal/kvcache/kvbm.py
+GPU model (shim):      opal/infra/gpu_model.py
+I/O model:             opal/infra/io_model.py
+LLM inference:         opal/llm_inference/ (opal_model.py, config_loader.py,
+                       roofline_inference_model.py, legacy_gpu_model.py,
+                       inference_model_factory.py, inference_engine.py)
+Config system:         opal/config/opal_config.py
+Utilities:             opal/utils/util.py
 Default config:        configs/defaults.json
 Model configs:         model-configs/
 Traces:                traces/
@@ -888,8 +1011,9 @@ WorkloadOrchestrator       - Multi-stage workload management
 OpalStorageManager         - KVC tiering orchestration
 OpalStorageBackend         - Per-tier storage simulation
 OpalTokenDatabase          - Prefix-based KV cache lookup
-GPUModel                   - GPU inference timing (roofline/synthetic)
-OpalModelConfig            - LLM model configuration (HF or local)
+OpalModel                  - Config-derived model representation (opal.llm_inference)
+LLMRooflineModel           - New config-dimension-driven timing engine + 4 subclasses
+GPUModel                   - Legacy inference timing (roofline/synthetic), still default
 OpalConfig / ConfigProxy   - Config loading and nested access
 LLMRequest                 - Request data structure
 LLMRequestStats            - Per-request statistics
@@ -911,10 +1035,10 @@ PYTHONPATH           - Must include project root
 **For AI Agents:** This document provides the essential context needed to understand and work with the OPAL simulator codebase. When making changes:
 
 1. Read relevant documentation in `wiki/` first
-2. Run tests after changes: `pytest -s -v tests/test_configs.py`
+2. Run tests after changes: `uv run pytest -s -v -m "not network" tests/`
 3. Format code with Black: `./sh-black-formatter.sh`
 4. Add co-author to commits
 5. Update this file if adding new patterns or components
 
-**Last Updated:** 2026-05-11
+**Last Updated:** 2026-08-28
 **Maintainer:** IBM Research

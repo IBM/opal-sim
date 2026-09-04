@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-import pytest
-from pathlib import Path
+from pathlib import Path  # noqa: I001
 
-from opal.opal import OpalSimulator
-from opal.opal_config import OpalConfig
+import pytest
+
+from opal.core.opal import OpalSimulator
+from opal.config.opal_config import OpalConfig
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 
@@ -21,6 +22,5 @@ def test_config_loads_and_runs(config_file, tmp_path, monkeypatch):
     monkeypatch.chdir(Path(__file__).resolve().parent.parent)
     config = OpalConfig()
     config.initialize(str(config_file))
-    opal = OpalSimulator()
-    opal.init_from_config(config=config, output_dir=str(tmp_path))
+    opal = OpalSimulator.from_config(config=config, output_dir=str(tmp_path))
     opal.run(10)
