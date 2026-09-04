@@ -27,6 +27,9 @@ class StageStatistics:
         # per serving tier (apc/CPUMemory/LocalNVMe/DistributedFS) -> list of
         # prefix-hit tokens, one entry per request that hit that tier.
         self.raw_kvc_hit_tokens_per_tier: dict[str, list] = defaultdict(list)
+        # per serving tier (apc/CPUMemory/LocalNVMe/DistributedFS) -> list of
+        # prefix-hit tokens, one entry per request that hit that tier.
+        self.raw_kvc_hit_tokens_per_tier: dict[str, list] = defaultdict(list)
         self.debug_val = []
         self.input_output_tokens_sz: list[Tuple[int, int]] = []
         self.finished_requests = 0
@@ -466,6 +469,39 @@ class StageStatistics:
             "*--------------------------------------------------": None,
         }
         self.__print(final_stats)
+        self.print_kvc_tier_hit_rates()
+
+    def print_kvc_tier_hit_rates(self):
+        """Per-tier prefix-cache hit rate, ordered fastest (GPU/APC) -> slowest (DFS).
+
+        The rate is token-weighted: tier_tokens / total_input_tokens. Because
+        every matched token is attributed to exactly one tier (see
+        OpalKVCacheEngine.lookup), the per-tier rates form a clean split -- they
+        sum to the overall prefix-cache hit rate and never exceed 100%.
+        """
+        if not self.raw_kvc_hit_tokens_per_tier:
+            return
+        total_input_tokens = sum(i for i, _ in self.input_output_tokens_sz)
+        if total_input_tokens == 0:
+            return
+
+        # fastest -> slowest; unknown tiers sort last, alphabetically.
+        tier_order = ["apc", "CPUMemory", "LocalNVMe", "DistributedFS"]
+
+        def tier_sort_key(item):
+            name = item[0]
+            return (tier_order.index(name) if name in tier_order else len(tier_order), name)
+
+        tier_stats = {"---KVC Tokens Fetched per Tier (GPU->CPU->NVMe->DFS)---": None}
+        for tier_name, values in sorted(self.raw_kvc_hit_tokens_per_tier.items(), key=tier_sort_key):
+            arr = np.array(values, dtype=float)
+            total_tokens = float(arr.sum())
+            mean_tokens = float(arr.mean()) if arr.size else 0.0
+            tier_stats[f"  [{tier_name}] hit rate (%)"] = total_tokens / total_input_tokens * 100
+            tier_stats[f"  [{tier_name}] total tokens fetched"] = total_tokens
+            tier_stats[f"  [{tier_name}] mean tokens/request"] = mean_tokens
+        tier_stats["*--------------------------------------------------"] = None
+        self.__print(tier_stats)
         self.print_kvc_tier_hit_rates()
 
     def print_kvc_tier_hit_rates(self):

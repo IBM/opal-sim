@@ -925,6 +925,18 @@ class OpalKVCacheEngine:
             concurrency=cpu_cfg["concurrency"],
         )
 
+        # CPU->GPU link for copying retrieved KV into GPU HBM. Used by retrieve()
+        # to charge the host-to-device DMA. Reuses the CPUMemory tier's config
+        # (no separate fields for the link).
+        cpu_cfg = self.opal_config["kvc"]["CPUMemory"]
+        self.cpu_gpu_link = AbstractDevice(
+            self.opal_env,
+            name=f"CPU->GPU.{self.worker_id}",
+            bandwidth_bytes_per_sec=int(cpu_cfg["bandwidth_GBps"] * 10**9),
+            latency_per_request_sec=cpu_cfg["latency_nsec"] / 10**9,
+            concurrency=cpu_cfg["concurrency"],
+        )
+
     def __str__(self):
         return f"{__class__.__name__}.{self.worker_id}"
 
@@ -1044,19 +1056,17 @@ class OpalKVCacheEngine:
                 reordered_chunks.append((key, memory_obj, start, end))
                 tot_kv_size += memory_obj.get_size()
                 ret_mask[start:end] = True
-            tier_tokens[location] = tier_tokens.get(location, 0) + sum(end - start for _, start, end in blocks)
 
-        # Model the CPU->GPU (host-to-device) copy of the retrieved KV. The
-        # per-tier reads above brought the data into host memory; this charges
-        # the interconnect transfer of the total retrieved bytes into GPU HBM.
-        # Modeled as a single batched DMA over the shared cpu_gpu_link (concurrent
-        # retrieves contend for bandwidth), replacing the previously-unmodeled
-        # gpu_connector.batched_to_gpu() call.
-        if tot_kv_size > 0:
-            r = OpalIORequest(tot_kv_size)
-            self.cpu_gpu_link.process_one_request(r)
-            yield r.event
-
+        # back to the retrieve() function and, here in the code memory_objects
+        # representing data in memory are transfer to the GPU. But we dont model
+        # that for now
+        """
+        if len(reordered_chunks) > 0:
+            _, memory_objs, starts, ends = zip(*reordered_chunks, strict=False)
+            self.gpu_connector.batched_to_gpu(
+                list(memory_objs), list(starts), list(ends), **kwargs
+            )
+        """
         retrieved_tokens = int(np.sum(ret_mask))
         onload_time_sec = self.opal_env.simpy_env.now - start_time
         self.log.debug(
