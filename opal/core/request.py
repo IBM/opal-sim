@@ -133,10 +133,6 @@ class LLMRequest:
         self.session_id: str | None = None
         self.span_id: str | None = None
         self.trace_id: str | None = None
-        self.output_token_ids: list[int] | None = None
-        self.session_id: str | None = None
-        self.span_id: str | None = None
-        self.trace_id: str | None = None
         self.stats = LLMRequestStats()
         self.stats._1_creation_time = self.env.now
         self.has_completed = self.env.event()
