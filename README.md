@@ -1,14 +1,12 @@
 # Opal - A Discrete-event based LLM Inference Platform Simulator in Python
 - [Opal - A Discrete-event based LLM Inference Platform Simulator in Python](#opal---a-discrete-event-based-llm-inference-platform-simulator-in-python)
   - [What's new](#whats-new)
-  - [What's new](#whats-new)
   - [Overview](#overview)
   - [Dependencies](#dependencies)
   - [Usage](#usage)
   - [What are simulation outputs](#what-are-simulation-outputs)
   - [Logging](#logging)
   - [Configuration](#configuration)
-    - [Config Builder UI](#config-builder-ui)
     - [Config Builder UI](#config-builder-ui)
   - [Development](#development)
     - [Unit Tests](#unit-tests)
@@ -18,7 +16,6 @@
     - [Contributions](#contributions)
 - [Contacts / questions](#contacts--questions)
 - [License](#license)
-
 
 
 <p align="center">

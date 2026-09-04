@@ -27,9 +27,6 @@ class StageStatistics:
         # per serving tier (apc/CPUMemory/LocalNVMe/DistributedFS) -> list of
         # prefix-hit tokens, one entry per request that hit that tier.
         self.raw_kvc_hit_tokens_per_tier: dict[str, list] = defaultdict(list)
-        # per serving tier (apc/CPUMemory/LocalNVMe/DistributedFS) -> list of
-        # prefix-hit tokens, one entry per request that hit that tier.
-        self.raw_kvc_hit_tokens_per_tier: dict[str, list] = defaultdict(list)
         self.debug_val = []
         self.input_output_tokens_sz: list[Tuple[int, int]] = []
         self.finished_requests = 0

@@ -78,9 +78,8 @@ from opal.core.events import KVCEvent, SystemEvent
 from opal.kvcache.kvc_manager import OpalKVCacheEngine, OpalTokenDatabase, OpalTokenDatabase
 from opal.kvcache.eviction_policy import resolve_apc_blocks, commit_apc_blocks, make_apc_policy
 from opal.llm_inference.opal_model import OpalModel
-from opal.config.llm_model import OpalModelConfig
 from opal.core.request import LLMRequest
-from opal.utils.util import parse_bool, safe_process
+from opal.utils.util import safe_process
 
 # ================================================================================
 # SCHEDULER DATA STRUCTURES
