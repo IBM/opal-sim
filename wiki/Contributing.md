@@ -46,15 +46,37 @@ sh-black-formatter.sh
 
 `sh-black-formatter.sh` simply runs `black --config ./pyproject.toml --no-cache .` over the whole repository, so it reformats every Python file, not just the ones you touched.
 
+## Linting: Ruff
+
+The project also runs [Ruff](https://docs.astral.sh/ruff/) to catch unused imports, unused local variables, and redefinitions (`F401`, `F811`, `F841`). Configuration lives in `pyproject.toml` alongside the Black config:
+
+```toml
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F401", "F811", "F841"]
+```
+
+Install Ruff and run it from the top-level directory before sending a pull request:
+
+```shell
+uv pip install ruff
+ruff check --config ./pyproject.toml opal/ tests/
+```
+
+The pre-commit hook (below) runs Ruff on just your staged files, so pre-existing issues elsewhere in the tree won't block your commit — but a full `ruff check` over `opal/` and `tests/` may still surface older findings unrelated to your change; fixing those isn't required to get your PR merged.
+
 ### Optional: pre-commit hook
 
-The repository ships a git hook at `.githooks/pre-commit` that runs Black automatically on just the staged `.py` files at commit time (and re-stages them after formatting). It is **not** enabled by default — turn it on once per clone with:
+The repository ships a git hook at `.githooks/pre-commit` that runs Black and then Ruff automatically on just the staged `.py` files at commit time (Black's formatting is re-staged automatically; a Ruff failure aborts the commit so you can fix it). It is **not** enabled by default — turn it on once per clone with:
 
 ```shell
 git config core.hooksPath .githooks
 ```
 
-This is a convenience so you don't forget to format before committing; running `sh-black-formatter.sh` manually before opening the PR achieves the same result.
+This is a convenience so you don't forget to format and lint before committing; running the commands above manually before opening the PR achieves the same result.
 
 ## Configuration changes
 

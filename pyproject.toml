@@ -27,6 +27,7 @@ dependencies = [
 dev = [
     "pytest>=9.0",
     "black>=25.0",
+    "ruff>=0.14",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -36,10 +37,18 @@ packages = ["opal"]
 line-length = 120
 target-version = ["py311"]
 
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F401", "F811", "F841"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0",
     "black>=25.0",
+    "ruff>=0.14",
 ]
 
 [tool.pytest.ini_options]
