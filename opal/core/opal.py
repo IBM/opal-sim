@@ -10,6 +10,7 @@ from opal.stats.plot import simend_plot
 from opal.utils.util import check_and_create_directory
 from opal.core.environment import OpalSimulatorEnvironment
 from opal.config.opal_config import OpalConfig
+from opal.cost.cost_model import report_run_cost
 import gc
 
 import faulthandler
@@ -156,7 +157,20 @@ class OpalSimulator:
         self.process_sim_results()
         if self.config["simulation"]["save_simulation_data"]:
             self.sim.write_simulation_data()
+        if "cost" in self.config._config:
+            self._report_cost()
         return runtime, virtual_time
+
+    def _report_cost(self):
+        stages = [s.to_dict() for s in self.sim.workload_orchestrator.stage_stats]
+        output_dir = self.sim.output_dir if self.config["simulation"]["save_simulation_data"] else None
+        log_path = os.path.join(self.sim.output_dir, "simulation.log") if self.sim.output_dir else None
+        log_file = open(log_path, "a") if log_path else None
+        try:
+            report_run_cost(stages, self.config, self.config["cost"], output_dir=output_dir, log_file=log_file)
+        finally:
+            if log_file is not None:
+                log_file.close()
 
     def _process_per_stage(self):
         stats = self.sim.workload_orchestrator.stage_stats

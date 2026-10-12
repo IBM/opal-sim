@@ -6,6 +6,7 @@
 * [[OTel Trace Replay]]
 * [[RAG Workload]]
 * [Config Usage Tracking](Config-Usage-Tracking)
+* [[Cost Model]]
 * Code Commentary
   * [[Simpy Basics]]
   * [[KVCache manager]]

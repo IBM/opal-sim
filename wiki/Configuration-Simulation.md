@@ -188,3 +188,15 @@ Each tier is configured as a separate object keyed by its name:
 | `latency_nsec` | float | `100000` | Network + access latency in nanoseconds. |
 | `concurrency` | int | `1000` | Maximum concurrent I/O operations. |
 | `capacity_GB` | float | `1048576` | Total capacity in GB (effectively unlimited). |
+
+## cost
+
+Optional. When present, the run is priced at the end and each stage gets `stage_N/opal_cost.json`; when absent, nothing changes. Full description in [[Cost Model]].
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `profile` | string | required | Price profile JSON, e.g. `cost-profiles/cloud/aws-<date>.json`. |
+| `policy` | string | `gpu_hour_rental` | Cost policy. |
+| `region` | string | cheapest region | Region to price in. |
+| `pricing` | string | `on_demand` | `on_demand` or `spot`. |
+| `instance_type` | string | cheapest instance | Restrict to one instance type. |

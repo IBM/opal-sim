@@ -63,6 +63,18 @@ Synthetic config dicts (no network access, no fixtures) that must be rejected wi
 - **`TestGraniteHybridPatternContradiction`** — a `granitemoehybrid` pattern is expected to use a 2-way (mamba/attention-only) convention; a pattern that also carries an explicit FFN/MoE token contradicts that assumption and must raise rather than silently picking a convention.
 - **`TestSanityPositivePath`** — confirms the well-formed base fixtures the negative tests are derived from (`DENSE_BASE`, `HYBRID_BASE` + Mamba fields) do *not* raise, i.e. the strict checks don't false-positive on valid configs.
 
+### `tests/test_cost_model.py` — cost layer (`opal/cost/`)
+
+Unit tests use a small hand-made price profile, so every expected number can be checked by hand. See [[Cost Model]].
+
+- **`test_gpu_instances`** — every instance type and region offering a GPU (case-insensitive), spot prices, the `instance_type` filter; errors list the available GPUs / pricing models.
+- **`test_stage_usage`** — provisioned GPU-hours = mean worker samples × `tp` × duration; the share of the stage at each worker count; token and request totals; fallback to `simulation.num_workers` when a stage has no samples; a stage that never ran costs nothing.
+- **`test_whole_instances_are_billed`** — whole instances are billed: the cheapest instance type per region, instances too small for one worker skipped, `gpu_used` / `gpu_unused` and `gpus_used` / `gpus_rented` (e.g. 6/8 GPUs on one 8-GPU instance), per-request and per-1M-token values, the `by_region` ranking, and instance counts per sample under autoscaling.
+- **`test_region_tie_and_names`** — the default region is the cheapest; on a cost tie the option with fewer instances wins; policy and pricing names are case-insensitive; a zero-length stage is still ranked by cost per hour.
+- **`test_price_run_errors`** — errors for a missing profile, an unknown policy, a region without a price, and a worker (`tp`) larger than any instance.
+- **`test_cost_written_at_end_of_run_and_offline_matches`** — a 10 s run of `configs/defaults.json` plus a `cost` section pointing to the hand-made profile writes `stage_N/opal_cost.json` (on a `tiny.1gpu`, 1 of 1 GPUs used; breakdown adds up to the total) and the cost lines to `simulation.log` in the documented format (stage 1, which never starts in 10 s, still names the 1-GPU instance), and `python -m opal.cost` on the same run folder gives the same total.
+- **`test_no_cost_section_means_no_cost_report`** — a run of `configs/defaults.json` writes no cost report (the cost layer is opt-in).
+
 ### `tests/test_device.py` — I/O device bandwidth/latency model
 
 Uses a minimal fake SimPy environment (`MockEnv`) to drive `AbstractDevice` / `OpalIORequest` directly, independent of the rest of the simulator.
