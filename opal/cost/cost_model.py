@@ -16,6 +16,10 @@ def stage_usage(stage: dict, hw, initial_workers: int) -> dict:
     samples = stage["per_unit_workers"] or [initial_workers]
     mean_workers = sum(samples) / len(samples)
     gpus_per_worker = int(hw.get("tp", 1))
+    provisioned = mean_workers * gpus_per_worker * duration / 3600
+    # GPU-busy seconds added each simulated second, summed over workers. A batch counts when it ends,
+    # so one crossing a stage boundary lands in the later stage: cap at what was provisioned.
+    busy = min(sum(stage["per_unit_gpu_busy_time"]) * gpus_per_worker / 3600, provisioned)
     tokens = stage["input_output_tokens_sz"]
     return {
         "duration_s": duration,
@@ -23,7 +27,9 @@ def stage_usage(stage: dict, hw, initial_workers: int) -> dict:
         "gpus_per_worker": gpus_per_worker,
         "mean_workers": mean_workers,
         "workers_time_share": {w: n / len(samples) for w, n in Counter(samples).items()},
-        "provisioned_gpu_hours": mean_workers * gpus_per_worker * duration / 3600,
+        "provisioned_gpu_hours": provisioned,
+        "busy_gpu_hours": busy,
+        "busy_share": busy / provisioned if provisioned else 0.0,
         "finished_requests": stage["finished_requests"],
         # Token counts can be numpy ints (workload generators); int() keeps the report JSON-serializable.
         "input_tokens": int(sum(t[0] for t in tokens)),
@@ -61,7 +67,8 @@ def gpu_instances(profile: dict, gpu: str, pricing: str = "on_demand", instance_
 def gpu_hour_rental(usage: dict, profile: dict, cost_config) -> dict:
     """Instance-hours x instance price: the GPU line of CachedAttention's bill (USENIX ATC'24).
 
-    Whole instances are billed; GPUs that are rented but hold no worker are reported as `gpu_unused`.
+    Whole instances are billed. The workers' GPUs are split into `gpu_busy` (running a batch) and `gpu_idle`;
+    GPUs that are rented but hold no worker are reported as `gpu_unused`.
     """
     pricing = str(cost_config.get("pricing", "on_demand")).casefold()
     tp = usage["gpus_per_worker"]
@@ -97,6 +104,7 @@ def gpu_hour_rental(usage: dict, profile: dict, cost_config) -> dict:
             f"'{profile['name']}'. Regions with a price: {sorted(o['region'] for o in per_region)}"
         )
     used = usage["provisioned_gpu_hours"] * chosen["price_per_gpu_hour"]
+    busy = usage["busy_gpu_hours"] * chosen["price_per_gpu_hour"]
     return {
         "pricing": {
             **chosen,
@@ -104,7 +112,7 @@ def gpu_hour_rental(usage: dict, profile: dict, cost_config) -> dict:
             "gpus_used": usage["mean_workers"] * tp,
             "gpus_rented": chosen["instances"] * chosen["gpus_per_instance"],
         },
-        "breakdown": {"gpu_used": used, "gpu_unused": max(0.0, chosen["cost"] - used)},
+        "breakdown": {"gpu_busy": busy, "gpu_idle": used - busy, "gpu_unused": max(0.0, chosen["cost"] - used)},
         "by_region": per_region,
     }
 
@@ -158,7 +166,7 @@ def report_run_cost(stages: list[dict], config, cost_config, output_dir: str | N
         lines.append(
             f"stage_{r['stage']}: {r['total']:.4f} {r['currency']}"
             f" | {p['instances']:g} x {p['instance_type']}, {p['region']}, {p['pricing_model']}"
-            f" | {p['gpus_used']:g} of {p['gpus_rented']:g} GPUs used"
+            f" | {p['gpus_used']:g} of {p['gpus_rented']:g} GPUs used, {r['usage']['busy_share']:.0%} busy"
         )
         if output_dir is not None:
             with open(os.path.join(output_dir, f"stage_{r['stage']}", COST_FILE), "w") as f:

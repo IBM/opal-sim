@@ -76,7 +76,7 @@ The `Router` (`opal/router/router.py`) drives most of the bookkeeping:
 
 ### Per-second series (populated from Layer 3)
 
-Three parallel lists are appended to once per simulated second (see next section): `per_unit_req_done`, `per_unit_workers`, `per_unit_gpu_utilization`, via `add_per_unit_workdone()`, `add_per_unit_workers()`, and `add_per_unit_gpu_utilization()` respectively.
+Four parallel lists are appended to once per simulated second (see next section): `per_unit_req_done`, `per_unit_workers`, `per_unit_gpu_utilization`, `per_unit_gpu_busy_time`, via `add_per_unit_workdone()`, `add_per_unit_workers()`, `add_per_unit_gpu_utilization()`, and `add_per_unit_gpu_busy_time()` respectively.
 
 ### Computing summary metrics
 
@@ -88,15 +88,16 @@ Three parallel lists are appended to once per simulated second (see next section
 
 ### Persistence: `to_dict()` / `from_dict()` / JSON round-trip
 
-`to_dict()` serializes every field above (numpy arrays converted via `.tolist()`) into a plain dict; `from_dict()` reconstructs a `StageStatistics` from that dict (calling `__init__` first so `bins`/`latencies` get their default shape, then overwriting). `raw_kvc_hit_tokens` is read with `.get(..., [])` so old JSON files without that field still load. `write_to_json(path)` writes the dict out using a custom compact formatter (`dump_json_compact_lists` — one key per line, but lists/arrays kept on a single line for readability) rather than plain `json.dump`.
+`to_dict()` serializes every field above (numpy arrays converted via `.tolist()`) into a plain dict; `from_dict()` reconstructs a `StageStatistics` from that dict (calling `__init__` first so `bins`/`latencies` get their default shape, then overwriting). `raw_kvc_hit_tokens` and `per_unit_gpu_busy_time` are read with `.get(..., [])` so old JSON files without those fields still load. `write_to_json(path)` writes the dict out using a custom compact formatter (`dump_json_compact_lists` — one key per line, but lists/arrays kept on a single line for readability) rather than plain `json.dump`.
 
 ## Layer 3: per-second sampling (Router)
 
-The `Router` runs a dedicated SimPy process, `_per_second_stats()` (see [[Router]] for the full list of router processes), that wakes up once every simulated second for as long as the simulation is running and pushes three samples into the *currently active* stage's `StageStatistics`:
+The `Router` runs a dedicated SimPy process, `_per_second_stats()` (see [[Router]] for the full list of router processes), that wakes up once every simulated second for as long as the simulation is running and pushes four samples into the *currently active* stage's `StageStatistics`:
 
 - `stats.add_per_unit_workdone(self.cumulative_finished - last)` — requests completed since the previous tick (this feeds `thrp-request-sec.pdf`).
 - `stats.add_per_unit_workers(len(self._active_workers))` — how many workers are active right now (feeds `thrp-workers-sec.pdf`; flat if auto-scaling is disabled).
 - `stats.add_per_unit_gpu_utilization(utilization)`, where `utilization = mean(w.gpu_busy_time for w in active_workers) * 100 / now` — average, since simulation start, of the fraction of time each active worker's GPU has been busy (feeds `gpu-utilization-per-sec.pdf`).
+- `stats.add_per_unit_gpu_busy_time(busy - last_busy)`, where `busy = sum(w.gpu_busy_time for w in active_workers)` — GPU-busy seconds that all workers added since the previous tick. Unlike the utilization above, which is cumulative since simulation start (so a later stage's reading still includes the earlier stages), its sum over a stage is that stage's busy worker-seconds, also when workers are added during the stage. Used by the cost layer ([[Cost Model]]).
 
 `sample_workdone_per_K(k)` (on `StageStatistics`, delegating to `opal.utils.util.sample_series_K`) can downsample any of these per-second series by averaging every `k` consecutive samples — used by the plotting code's `per_K` parameter to reduce noise on long runs.
 

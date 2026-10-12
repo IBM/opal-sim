@@ -63,9 +63,9 @@ With `simulation.save_simulation_data` on, each stage gets `stage_N/opal_cost.js
 |-------|---------|
 | `total`, `currency` | Cost of the stage. |
 | `per_request`, `per_1M_tokens` | `total` divided by finished requests, and by input + output tokens (× 10⁶). `null` if zero. |
-| `breakdown` | Cost per resource line; the lines add up to `total`. `gpu_hour_rental`: `gpu_used` (the GPUs that hold workers) and `gpu_unused` (rented with the instance but idle). |
+| `breakdown` | Cost per resource line; the lines add up to `total`. `gpu_hour_rental`: `gpu_busy` (the workers' GPUs while a batch runs), `gpu_idle` (the workers' GPUs with no batch running) and `gpu_unused` (rented with the instance but holding no worker). |
 | `pricing` | Region, pricing model, instance type, GPUs per instance, instance price per hour, price per GPU-hour, mean instances rented, and `gpus_used` / `gpus_rented`. |
-| `usage` | Stage duration, GPU, GPUs per worker, mean workers, provisioned GPU-hours, requests and tokens. |
+| `usage` | Stage duration, GPU, GPUs per worker, mean workers, provisioned and busy GPU-hours, busy share, requests and tokens. |
 | `by_region` | The same usage priced in every region of the profile, cheapest first. |
 | `profile` | Name, snapshot date, path and source of the price profile. |
 
@@ -73,12 +73,12 @@ One line per stage and the run total are printed after the stage summaries, and 
 
 ```
 ===== cost =====
-stage_0: 0.0959 USD | 1 x p5.4xlarge, us-east-1, on_demand | 1 of 1 GPUs used
-stage_1: 0.0971 USD | 1 x p5.4xlarge, us-east-1, on_demand | 1 of 1 GPUs used
+stage_0: 0.0959 USD | 1 x p5.4xlarge, us-east-1, on_demand | 1 of 1 GPUs used, 85% busy
+stage_1: 0.0971 USD | 1 x p5.4xlarge, us-east-1, on_demand | 1 of 1 GPUs used, 16% busy
 total: 0.1930 USD
 ```
 
-Per stage: what you pay, the instances rented (`1 x p5.4xlarge`; a fraction when the router scaled during the stage), region and pricing model, and how many of the rented GPUs hold workers.
+Per stage: what you pay, the instances rented (`1 x p5.4xlarge`; a fraction when the router scaled during the stage), region and pricing model, how many of the rented GPUs hold workers, and the share of the workers' GPU time spent running batches.
 
 ## Offline pricing
 
@@ -99,9 +99,11 @@ It reads `sim_config.json` and every `stage_N/opal_stats.json`; command-line opt
 The GPU line of the cost model in CachedAttention (Gao et al., USENIX ATC 2024): rented instance-hours × instance price. Whole instances are billed, as a cloud does.
 
 ```
-cost = instances × hours × instance price per hour                       -> total
-used = GPU-hours of the workers × (instance price ÷ GPUs per instance)   -> breakdown.gpu_used
-idle = cost − used                                                       -> breakdown.gpu_unused
+cost   = instances × hours × instance price per hour              -> total
+used   = GPU-hours of the workers × price per GPU-hour            (price per GPU-hour = instance price ÷ GPUs per instance)
+busy   = busy GPU-hours of the workers × price per GPU-hour       -> breakdown.gpu_busy
+idle   = used − busy                                              -> breakdown.gpu_idle
+unused = cost − used                                              -> breakdown.gpu_unused
 ```
 
 `instances` = workers ÷ workers per instance, rounded up, averaged over the stage if the number of workers changes (`pricing.instances`); workers per instance = GPUs per instance ÷ `worker.hw.tp`, rounded down. "X of Y GPUs used" compares the workers' GPUs with the GPUs of the rented instances.
@@ -109,13 +111,15 @@ idle = cost − used                                                       -> br
 - **Workers** come from the router, which records the number of active workers once per simulated second (`Router._per_second_stats`). A stage shorter than one second has no samples and uses `simulation.num_workers`.
 - **Instances**: a worker's `worker.hw.tp` GPUs must fit in one instance (Opal doesn't model traffic between instances), so an instance holds ⌊GPUs per instance ÷ `tp`⌋ workers, and instance types with fewer GPUs than `tp` are skipped. For each sample, instances needed = ⌈workers ÷ workers per instance⌉; their mean over the stage × stage duration = instance-hours. This stays exact when the router adds workers.
 - **Choice**: in each region, the instance type with the lowest cost per hour (instances × instance price; the same ranking as the total, and still defined for a stage that never ran); on a tie, the one needing fewer instances. With `region` unset, the cheapest region.
-- **Used vs unused**: `gpu_used` = GPU-hours of the workers (mean workers × `tp` × duration) × price per GPU-hour (instance price ÷ GPUs per instance); `gpu_unused` = the rest of the bill, i.e. GPUs rented with the instance that hold no worker. The console line shows them as `X of Y GPUs used`.
+- **Busy, idle and unused**: the GPU-hours of the workers (mean workers × `tp` × duration) are split into `gpu_busy`, while a batch runs, and `gpu_idle`, the rest (e.g. every session waiting on a tool). `gpu_unused` is the rest of the bill, i.e. GPUs rented with the instance that hold no worker. All three are priced at instance price ÷ GPUs per instance. The console line shows `X of Y GPUs used` and the busy share.
+- **Busy time** comes from the router, which records once per simulated second the GPU-busy seconds that all workers added in that second (`per_unit_gpu_busy_time`, see [[Statistics collection and processing]]). Their sum over the stage × `tp` = busy GPU-hours. A batch counts when it ends, so one that crosses a stage boundary lands in the later stage; busy is capped at the workers' GPU-hours.
 
 Assumptions to keep in mind when reading the numbers:
 
 - The instance is matched by `worker.hw.gpu` only. It is not checked that the instance has enough memory or local disk for the configured KV tiers (`kvc.CPUMemory`, `kvc.LocalNVMe`); the timing model uses `worker.hw.tflops`/`mem_bw_TBps`, not the GPU name.
 - The instance price includes its CPUs, memory and local disk; there is no separate storage or network line yet.
-- Every provisioned GPU-hour is paid, busy or idle; idle time is not split out yet.
+- "Busy" means a batch is running, whatever its size: a batch of one request counts as much as a full one.
+- Busy time after the run's last per-second sample (under a second) is not counted, so very short runs slightly overstate idle.
 
 ### Adding a policy
 

@@ -43,6 +43,25 @@ class TestStageStatisticsKVCHitTokens:
         assert restored.raw_kvc_hit_tokens == []
 
 
+class TestStageStatisticsGPUBusyTime:
+    def test_round_trips_through_to_dict_and_from_dict(self):
+        stats = StageStatistics()
+        stats.add_per_unit_gpu_busy_time(0.75)
+        stats.add_per_unit_gpu_busy_time(1.0)
+
+        restored = StageStatistics.from_dict(stats.to_dict())
+
+        assert restored.per_unit_gpu_busy_time == [0.75, 1.0]
+
+    def test_from_dict_defaults_missing_field_to_empty_list(self):
+        data = StageStatistics().to_dict()
+        del data["per_unit_gpu_busy_time"]
+
+        restored = StageStatistics.from_dict(data)
+
+        assert restored.per_unit_gpu_busy_time == []
+
+
 class TestStageStatisticsSummaryLogFile:
     def test_print_summary_results_writes_to_log_file(self):
         stats = StageStatistics()

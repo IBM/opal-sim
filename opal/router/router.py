@@ -136,6 +136,7 @@ class Router:
         from opal.stats.stage_statistics import StageStatistics
 
         last = 0
+        last_busy = 0
         while not self.opal_env.are_we_done():
             yield self.sim_env.timeout(1)
             stats: StageStatistics = self.opal_env.workload_orchestrator.get_active_stage_stats()
@@ -147,6 +148,9 @@ class Router:
             # so far.
             utilization = gpu_time_avg * 100 / self.sim_env.now
             stats.add_per_unit_gpu_utilization(utilization)
+            busy = sum(w.gpu_busy_time for w in self._active_workers.values())
+            stats.add_per_unit_gpu_busy_time(busy - last_busy)
+            last_busy = busy
         self.log.debug(f"Breaking the per second stats loop at {self.sim_env.now}")
 
     def _policy_leastloaded(self, req: LLMRequest):

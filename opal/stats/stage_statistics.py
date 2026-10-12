@@ -33,6 +33,7 @@ class StageStatistics:
         self.per_unit_req_done = []
         self.per_unit_workers = []
         self.per_unit_gpu_utilization = []
+        self.per_unit_gpu_busy_time = []
         while val < max_bin:
             self.bins.append(val)
             val *= 2
@@ -61,6 +62,7 @@ class StageStatistics:
             "per_unit_throughput": self.per_unit_req_done,
             "per_unit_workers": self.per_unit_workers,
             "per_unit_gpu_utilization": self.per_unit_gpu_utilization,
+            "per_unit_gpu_busy_time": self.per_unit_gpu_busy_time,
             # numpy array -> list
             "latencies": self.latencies.tolist(),
             "stage_time_start": self.stage_time_start,
@@ -88,6 +90,7 @@ class StageStatistics:
         obj.per_unit_req_done = data["per_unit_throughput"]
         obj.per_unit_workers = data["per_unit_workers"]
         obj.per_unit_gpu_utilization = data["per_unit_gpu_utilization"]
+        obj.per_unit_gpu_busy_time = data.get("per_unit_gpu_busy_time", [])
         obj.stage_time_end = data["stage_time_end"]
         obj.stage_time_start = data["stage_time_start"]
         obj.kvc_tier_tokens = defaultdict(int, data.get("kvc_tier_tokens", {}))
@@ -223,6 +226,9 @@ class StageStatistics:
 
     def add_per_unit_gpu_utilization(self, avg_gpu_util: float = 0.0):
         self.per_unit_gpu_utilization.append(avg_gpu_util)
+
+    def add_per_unit_gpu_busy_time(self, busy_time: float = 0.0):
+        self.per_unit_gpu_busy_time.append(busy_time)
 
     def add_per_unit_workers(self, worker_count: int):
         self.per_unit_workers.append(worker_count)
