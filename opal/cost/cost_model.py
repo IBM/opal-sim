@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import statistics
 from collections import Counter
 
 COST_FILE = "opal_cost.json"
@@ -41,19 +42,22 @@ def gpu_instances(profile: dict, gpu: str, pricing: str = "on_demand", instance_
     """Every instance type and region of the profile that offers `gpu` with a `pricing` price."""
     if pricing not in ("on_demand", "spot"):
         raise ValueError(f"Unknown pricing model '{pricing}'. Available: ['on_demand', 'spot']")
-    options = [
-        {
-            "region": region,
-            "instance_type": name,
-            "gpus_per_instance": inst["accelerator_count"],
-            "instance_price_per_hour": prices[pricing],
-            "price_per_gpu_hour": prices[pricing] / inst["accelerator_count"],
-        }
-        for name, inst in profile["instances"].items()
-        if inst["accelerator"].casefold() == gpu.casefold() and instance_type in (None, name)
-        for region, prices in inst["prices"].items()
-        if pricing in prices
-    ]
+    options = []
+    for name, inst in profile["instances"].items():
+        if inst["accelerator"].casefold() != gpu.casefold() or instance_type not in (None, name):
+            continue
+        for region, prices in inst["prices"].items():
+            if pricing not in prices:
+                continue
+            options.append(
+                {
+                    "region": region,
+                    "instance_type": name,
+                    "gpus_per_instance": inst["accelerator_count"],
+                    "instance_price_per_hour": prices[pricing],
+                    "price_per_gpu_hour": prices[pricing] / inst["accelerator_count"],
+                }
+            )
     if not options:
         available = sorted({inst["accelerator"] for inst in profile["instances"].values()})
         raise ValueError(
@@ -119,6 +123,49 @@ def gpu_hour_rental(usage: dict, profile: dict, cost_config) -> dict:
 
 POLICIES = {"gpu_hour_rental": gpu_hour_rental}
 
+# Weight of one token of each kind in a session's share of gpu_busy, relative to an output token. Defaults from
+# published serving measurements and list prices (wiki/Cost-Model.md, "Per-session cost").
+TOKEN_WEIGHTS = {"output": 1.0, "recomputed_input": 0.3, "cached_input": 0.01}
+
+
+def session_costs(stage: dict, breakdown: dict, cost_config) -> dict | None:
+    """Split a stage's bill between agent sessions: `gpu_busy` by weighted tokens, `gpu_idle` + `gpu_unused` by
+    time open (first arrival to last completion). None if the stage has no session ids (only the OTel replay sets them).
+    """
+    ids = stage.get("raw_session_ids") or []
+    if not any(ids):
+        return None
+    weights = {**TOKEN_WEIGHTS, **dict(cost_config.get("token_weights") or {})}
+    if set(weights) != set(TOKEN_WEIGHTS) or min(weights.values()) < 0 or max(weights.values()) == 0:
+        raise ValueError(f"'token_weights' takes non-negative weights for {sorted(TOKEN_WEIGHTS)}, not all zero")
+    work, first, last = Counter(), {}, {}
+    rows = zip(
+        ids,
+        stage["input_output_tokens_sz"],
+        stage["raw_kvc_hit_tokens"],
+        stage["arrival_completion_times"],
+        strict=True,
+    )
+    for sid, (inp, out), cached, (arrival, done) in rows:
+        work[sid] += (
+            weights["output"] * out + weights["recomputed_input"] * (inp - cached) + weights["cached_input"] * cached
+        )
+        first[sid] = min(first.get(sid, arrival), arrival)
+        last[sid] = max(last.get(sid, done), done)
+    open_time = {sid: last[sid] - first[sid] for sid in first}
+    busy, waiting = breakdown["gpu_busy"], breakdown["gpu_idle"] + breakdown["gpu_unused"]
+    total_work, total_open_time = sum(work.values()), sum(open_time.values())
+    costs = {sid: busy * work[sid] / total_work + waiting * open_time[sid] / total_open_time for sid in first}
+    ranked = sorted(costs.values())
+    return {
+        "token_weights": weights,
+        "sessions": len(costs),
+        "median": statistics.median(ranked),
+        "p90": ranked[math.ceil(0.9 * len(ranked)) - 1],
+        "max": ranked[-1],
+        "per_session": costs,
+    }
+
 
 def price_run(stages: list[dict], config, cost_config) -> list[dict]:
     """Price every stage. `stages`: StageStatistics.to_dict() per stage; `config`: the simulation config."""
@@ -145,6 +192,7 @@ def price_run(stages: list[dict], config, cost_config) -> list[dict]:
                 "per_request": total / usage["finished_requests"] if usage["finished_requests"] else None,
                 "per_1M_tokens": total / tokens * 1e6 if tokens else None,
                 **priced,
+                "sessions": session_costs(stage, priced["breakdown"], cost_config),
                 "usage": usage,
                 "profile": {
                     "name": profile["name"],
@@ -168,6 +216,12 @@ def report_run_cost(stages: list[dict], config, cost_config, output_dir: str | N
             f" | {p['instances']:g} x {p['instance_type']}, {p['region']}, {p['pricing_model']}"
             f" | {p['gpus_used']:g} of {p['gpus_rented']:g} GPUs used, {r['usage']['busy_share']:.0%} busy"
         )
+        s = r["sessions"]
+        if s:
+            lines.append(
+                f"  {s['sessions']} sessions: median {s['median']:.4f}, p90 {s['p90']:.4f},"
+                f" max {s['max']:.4f} {r['currency']}"
+            )
         if output_dir is not None:
             with open(os.path.join(output_dir, f"stage_{r['stage']}", COST_FILE), "w") as f:
                 json.dump(r, f, indent=2)

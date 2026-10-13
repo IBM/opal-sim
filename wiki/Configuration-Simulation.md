@@ -200,3 +200,4 @@ Optional. When present, the run is priced at the end and each stage gets `stage_
 | `region` | string | cheapest region | Region to price in. |
 | `pricing` | string | `on_demand` | `on_demand` or `spot`. |
 | `instance_type` | string | cheapest instance | Restrict to one instance type. |
+| `token_weights` | object | `{"output": 1, "recomputed_input": 0.3, "cached_input": 0.01}` | Per-session split of `gpu_busy` (agent traces only); see [[Cost Model]]. |

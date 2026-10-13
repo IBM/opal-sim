@@ -62,6 +62,40 @@ class TestStageStatisticsGPUBusyTime:
         assert restored.per_unit_gpu_busy_time == []
 
 
+class TestStageStatisticsSessions:
+    def test_add_finished_request_records_session_and_times(self):
+        request = make_finished_request(0)
+        request.session_id = "s1"
+        request.stats.set_router_arrival_time(2.0)
+        request.stats.set_completion_time(5.0)
+        stats = StageStatistics()
+        stats.add_finished_request(request)
+        stats.add_finished_request(make_finished_request(0))
+
+        assert stats.raw_session_ids == ["s1", None]
+        assert stats.arrival_completion_times[0] == (2.0, 5.0)
+
+    def test_round_trips_through_to_dict_and_from_dict(self):
+        request = make_finished_request(0)
+        request.session_id = "s1"
+        stats = StageStatistics()
+        stats.add_finished_request(request)
+
+        restored = StageStatistics.from_dict(stats.to_dict())
+
+        assert restored.raw_session_ids == ["s1"]
+        assert restored.arrival_completion_times == stats.arrival_completion_times
+
+    def test_from_dict_defaults_missing_fields_to_empty_lists(self):
+        data = StageStatistics().to_dict()
+        del data["raw_session_ids"]
+        del data["arrival_completion_times"]
+
+        restored = StageStatistics.from_dict(data)
+
+        assert (restored.raw_session_ids, restored.arrival_completion_times) == ([], [])
+
+
 class TestStageStatisticsSummaryLogFile:
     def test_print_summary_results_writes_to_log_file(self):
         stats = StageStatistics()

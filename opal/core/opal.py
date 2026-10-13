@@ -10,7 +10,7 @@ from opal.stats.plot import simend_plot
 from opal.utils.util import check_and_create_directory
 from opal.core.environment import OpalSimulatorEnvironment
 from opal.config.opal_config import OpalConfig
-from opal.cost.cost_model import report_run_cost
+from opal.cost.cost_model import price_run, report_run_cost
 import gc
 
 import faulthandler
@@ -53,6 +53,9 @@ class OpalSimulator:
         self.plot_graphs = plot_graphs
         self.default_modelling_output = DEFAULT_MODELLING_OUTPUT
         self.parser = self._build_parser()
+        if "cost" in self.config._config:
+            # Price an empty stage, so a bad "cost" section fails now instead of after the run.
+            price_run([StageStatistics().to_dict()], self.config, self.config["cost"])
 
         output_dir = output_dir if output_dir is not None else DEFAULT_MODELLING_OUTPUT
         check_and_create_directory(output_dir, create_parents=True, fail_if_exists=True)

@@ -67,13 +67,17 @@ Synthetic config dicts (no network access, no fixtures) that must be rejected wi
 
 Unit tests use a small hand-made price profile, so every expected number can be checked by hand. See [[Cost Model]].
 
-- **`test_gpu_instances`** — every instance type and region offering a GPU (case-insensitive), spot prices, the `instance_type` filter; errors list the available GPUs / pricing models.
-- **`test_stage_usage`** — provisioned GPU-hours = mean worker samples × `tp` × duration; busy GPU-hours = summed busy seconds × `tp`, and the busy share, capped at what was provisioned; the share of the stage at each worker count; token and request totals; fallback to `simulation.num_workers` when a stage has no samples; a stage that never ran costs nothing.
-- **`test_whole_instances_are_billed`** — whole instances are billed: the cheapest instance type per region, instances too small for one worker skipped, `gpu_busy` / `gpu_idle` / `gpu_unused` and `gpus_used` / `gpus_rented` (e.g. 6/8 GPUs on one 8-GPU instance), per-request and per-1M-token values, the `by_region` ranking, and instance counts per sample under autoscaling.
-- **`test_region_tie_and_names`** — the default region is the cheapest; on a cost tie the option with fewer instances wins; policy and pricing names are case-insensitive; a zero-length stage is still ranked by cost per hour.
-- **`test_price_run_errors`** — errors for a missing profile, an unknown policy, a region without a price, and a worker (`tp`) larger than any instance.
-- **`test_cost_written_at_end_of_run_and_offline_matches`** — a 10 s run of `configs/defaults.json` plus a `cost` section pointing to the hand-made profile writes `stage_N/opal_cost.json` (on a `tiny.1gpu`, 1 of 1 GPUs used; breakdown adds up to the total) and the cost lines to `simulation.log` in the documented format, busy share included (stage 1, which never starts in 10 s, still names the 1-GPU instance), and `python -m opal.cost` on the same run folder gives the same total. With one worker in a stage that starts at t = 0, the router's per-second busy seconds add up to Opal's cumulative GPU utilization × time.
-- **`test_no_cost_section_means_no_cost_report`** — a run of `configs/defaults.json` writes no cost report (the cost layer is opt-in).
+- **`TestGpuInstances`** — every instance type and region offering a GPU (case-insensitive), spot prices, the `instance_type` filter; errors list the available GPUs / pricing models.
+- **`TestStageUsage`** — provisioned GPU-hours (`mean_workers * tp * duration`); busy GPU-hours (`sum(per_unit_gpu_busy_time) * tp`) and the busy share, capped at what was provisioned; the share of the stage at each worker count; token and request totals; fallback to `simulation.num_workers` when a stage has no samples; a stage that never ran costs nothing.
+- **`TestGpuHourRental`** — whole instances are billed: the cheapest instance type per region, instances too small for one worker skipped, `gpu_busy` / `gpu_idle` / `gpu_unused` and `gpus_used` / `gpus_rented` (e.g. 6/8 GPUs on one 8-GPU instance), instance counts per sample under autoscaling, per-request and per-1M-token values, the `by_region` ranking; the default region is the cheapest; on a cost tie the option with fewer instances wins; policy and pricing names are case-insensitive; a zero-length stage is still ranked by cost per hour.
+- **`TestPriceRunErrors`** — errors for a missing profile, an unknown policy, a region without a price, and a worker (`tp`) larger than any instance.
+- **`TestSessionCosts`** — the per-session split on a stage with two sessions: with output-only weights `gpu_busy` follows output tokens and `gpu_idle` follows time open (hand-checked dollars, median and max); `cost.token_weights` changes the busy split (a recomputed input token at half an output token) and is reported back; the defaults are 1 / 0.3 / 0.01; an unknown weight name is rejected; a stage without session ids has `sessions: null`.
+- **`TestEndToEnd`** — a 10 s run of `configs/defaults.json` plus a `cost` section pointing to the hand-made profile (fixture `cost_run_dir`):
+  - writes `stage_N/opal_cost.json` on a `tiny.1gpu`, 1 of 1 GPUs used, breakdown adding up to the total, no per-session split (the run has no sessions);
+  - appends the cost lines to `simulation.log` in the documented format, busy share included (stage 1, which never starts in 10 s, still names the 1-GPU instance);
+  - `python -m opal.cost` on the same run folder gives the same total;
+  - with one worker in a stage that starts at t = 0, the router's per-second busy seconds add up to Opal's cumulative GPU utilization times the elapsed time (`utilization[-1] / 100 * len(utilization)`).
+  - Without a `cost` section no cost report is written (the cost layer is opt-in); an unknown `cost.policy` raises when `OpalSimulator` is built, before any run folder is created.
 
 ### `tests/test_device.py` — I/O device bandwidth/latency model
 
@@ -103,6 +107,10 @@ Uses a fake SimPy environment (`MockEnv`) with a seeded RNG (`np.random.default_
 - **`TestStageStatisticsGPUBusyTime`**:
   - `StageStatistics.to_dict()` / `.from_dict()` round-trip preserves the `per_unit_gpu_busy_time` samples added with `add_per_unit_gpu_busy_time()`.
   - `from_dict()` defaults `per_unit_gpu_busy_time` to an empty list when the field is missing (older saved stats).
+- **`TestStageStatisticsSessions`**:
+  - Recording a finished request appends its session id (`None` when the workload sets none) to `raw_session_ids`, and its router arrival and completion times to `arrival_completion_times`.
+  - `StageStatistics.to_dict()` / `.from_dict()` round-trip preserves both lists.
+  - `from_dict()` defaults both to empty lists when the fields are missing (older saved stats).
 - **`TestStageStatisticsSummaryLogFile`**:
   - `print_summary_results(log_file=...)` writes the vLLM-style "Serving Benchmark Result" block (including a "Successful requests" line) to a provided file-like object.
   - `print_summary_results()` does not raise when called without a `log_file` argument (prints to the default logger/stdout path instead).

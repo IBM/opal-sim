@@ -70,6 +70,8 @@ The `Router` (`opal/router/router.py`) drives most of the bookkeeping:
 | `raw_gpu_time` | `stats.get_gpu_time()` |
 | `raw_decode_values` | `stats.get_decode_times_including_ttft()` (list of lists, one per request) |
 | `input_output_tokens_sz` | `(request.input_length, request.output_length)` tuples |
+| `raw_session_ids` | `request.session_id`: the agent session a request belongs to. Only the OTel trace replay sets it; other workloads record `None`. Used by the cost layer's per-session split ([[Cost Model]]). |
+| `arrival_completion_times` | `(stats.get_router_arrival_time(), stats.get_completion_time())` tuples: when the request reached the router and when it finished there. |
 | `kvc_tier_tokens` | accumulated (`defaultdict(int)`) from `stats.get_kvc_tier_tokens()`, tier name -> running token total across all requests in the stage |
 
 `failed_requests` exists as a counter field but is not incremented anywhere in the router/worker code as of this writing; `print_summary_results()` falls back to `max(failed_requests, queued_requests - finished_requests)` so a non-zero "Failed requests" figure can still show up in the summary even though nothing sets the field directly.
@@ -88,7 +90,7 @@ Four parallel lists are appended to once per simulated second (see next section)
 
 ### Persistence: `to_dict()` / `from_dict()` / JSON round-trip
 
-`to_dict()` serializes every field above (numpy arrays converted via `.tolist()`) into a plain dict; `from_dict()` reconstructs a `StageStatistics` from that dict (calling `__init__` first so `bins`/`latencies` get their default shape, then overwriting). `raw_kvc_hit_tokens` and `per_unit_gpu_busy_time` are read with `.get(..., [])` so old JSON files without those fields still load. `write_to_json(path)` writes the dict out using a custom compact formatter (`dump_json_compact_lists` — one key per line, but lists/arrays kept on a single line for readability) rather than plain `json.dump`.
+`to_dict()` serializes every field above (numpy arrays converted via `.tolist()`) into a plain dict; `from_dict()` reconstructs a `StageStatistics` from that dict (calling `__init__` first so `bins`/`latencies` get their default shape, then overwriting). `raw_kvc_hit_tokens`, `per_unit_gpu_busy_time`, `raw_session_ids` and `arrival_completion_times` are read with `.get(..., [])` so old JSON files without those fields still load. `write_to_json(path)` writes the dict out using a custom compact formatter (`dump_json_compact_lists` — one key per line, but lists/arrays kept on a single line for readability) rather than plain `json.dump`.
 
 ## Layer 3: per-second sampling (Router)
 

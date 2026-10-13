@@ -30,7 +30,7 @@ All four pieces are plain functions in `opal/cost/cost_model.py`; `python -m opa
 
 Because usage and prices are separate, one simulated run can be priced in every region of a profile without re-simulating (the `by_region` list in the report).
 
-The cost layer runs from `OpalSimulator.run()` right after `write_simulation_data()`. The same code also runs offline on a finished run folder (see [Offline pricing](#offline-pricing)).
+The cost layer runs from `OpalSimulator.run()` right after `write_simulation_data()`. The `cost` section is checked earlier, when `OpalSimulator` is built, by pricing an empty stage: a wrong profile, policy, pricing model or region fails before the run instead of after it. The same code also runs offline on a finished run folder (see [Offline pricing](#offline-pricing)).
 
 ## Configuration
 
@@ -52,6 +52,7 @@ Add a `cost` section to the simulation config, for example:
 | `region` | string | cheapest region | Region to price in. If omitted, the cheapest region with a price for the simulated GPU is used. |
 | `pricing` | string | `on_demand` | `on_demand` or `spot`. Case-insensitive. |
 | `instance_type` | string | cheapest instance | Restrict to one instance type (e.g. `p5.48xlarge`). |
+| `token_weights` | object | `{"output": 1, "recomputed_input": 0.3, "cached_input": 0.01}` | Weight of one token of each kind in a session's share of `gpu_busy`, relative to an output token (see [Per-session cost](#per-session-cost)). Kinds left out keep their default. |
 
 The simulated GPU is `worker.hw.gpu` (e.g. `"H100"`), matched case-insensitively against the profile's accelerator names; GPUs per worker is `worker.hw.tp`.
 
@@ -62,23 +63,24 @@ With `simulation.save_simulation_data` on, each stage gets `stage_N/opal_cost.js
 | Field | Meaning |
 |-------|---------|
 | `total`, `currency` | Cost of the stage. |
-| `per_request`, `per_1M_tokens` | `total` divided by finished requests, and by input + output tokens (× 10⁶). `null` if zero. |
+| `per_request`, `per_1M_tokens` | `total / finished_requests` and `total / (input_tokens + output_tokens) * 1e6`; `null` if the divisor is 0. |
 | `breakdown` | Cost per resource line; the lines add up to `total`. `gpu_hour_rental`: `gpu_busy` (the workers' GPUs while a batch runs), `gpu_idle` (the workers' GPUs with no batch running) and `gpu_unused` (rented with the instance but holding no worker). |
 | `pricing` | Region, pricing model, instance type, GPUs per instance, instance price per hour, price per GPU-hour, mean instances rented, and `gpus_used` / `gpus_rented`. |
 | `usage` | Stage duration, GPU, GPUs per worker, mean workers, provisioned and busy GPU-hours, busy share, requests and tokens. |
 | `by_region` | The same usage priced in every region of the profile, cheapest first. |
+| `sessions` | Agent traces only, else `null`: the stage's bill split between sessions (see [Per-session cost](#per-session-cost)). `token_weights` used, number of `sessions`, `median` / `p90` / `max` cost per session, and `per_session` (session id -> cost); the costs add up to `total`. |
 | `profile` | Name, snapshot date, path and source of the price profile. |
 
-One line per stage and the run total are printed after the stage summaries, and appended to `simulation.log` like them:
+One line per stage and the run total are printed after the stage summaries, and appended to `simulation.log` like them. For `configs/defaults.json` with the example profile from [Price profiles](#price-profiles):
 
 ```
 ===== cost =====
-stage_0: 0.0959 USD | 1 x p5.4xlarge, us-east-1, on_demand | 1 of 1 GPUs used, 85% busy
-stage_1: 0.0971 USD | 1 x p5.4xlarge, us-east-1, on_demand | 1 of 1 GPUs used, 16% busy
-total: 0.1930 USD
+stage_0: 0.7672 USD | 1 x p5.48xlarge, us-east-1, on_demand | 1 of 8 GPUs used, 85% busy
+stage_1: 0.7770 USD | 1 x p5.48xlarge, us-east-1, on_demand | 1 of 8 GPUs used, 16% busy
+total: 1.5442 USD
 ```
 
-Per stage: what you pay, the instances rented (`1 x p5.4xlarge`; a fraction when the router scaled during the stage), region and pricing model, how many of the rented GPUs hold workers, and the share of the workers' GPU time spent running batches.
+Per stage: what you pay, the instances rented (`1 x p5.48xlarge`; a fraction when the router scaled during the stage), region and pricing model, how many of the rented GPUs hold workers, and the share of the workers' GPU time spent running batches. For an agent trace, a second line gives the number of sessions and the median, p90 and max cost per session: `  <sessions> sessions: median <cost>, p90 <cost>, max <cost> <currency>`.
 
 ## Offline pricing
 
@@ -96,23 +98,27 @@ It reads `sim_config.json` and every `stage_N/opal_stats.json`; command-line opt
 
 ### `gpu_hour_rental`
 
-The GPU line of the cost model in CachedAttention (Gao et al., USENIX ATC 2024): rented instance-hours × instance price. Whole instances are billed, as a cloud does.
+The GPU line of the cost model in CachedAttention (Gao et al., USENIX ATC 2024): rented instance-hours times the instance price. Whole instances are billed, as a cloud does.
 
 ```
-cost   = instances × hours × instance price per hour              -> total
-used   = GPU-hours of the workers × price per GPU-hour            (price per GPU-hour = instance price ÷ GPUs per instance)
-busy   = busy GPU-hours of the workers × price per GPU-hour       -> breakdown.gpu_busy
-idle   = used − busy                                              -> breakdown.gpu_idle
-unused = cost − used                                              -> breakdown.gpu_unused
+workers_per_instance = floor(gpus_per_instance / tp)
+instances            = mean over the stage of ceil(workers / workers_per_instance)   # pricing.instances
+price_per_gpu_hour   = instance_price_per_hour / gpus_per_instance
+
+cost   = instances * hours * instance_price_per_hour   # -> total
+used   = provisioned_gpu_hours * price_per_gpu_hour    # the workers' GPUs
+busy   = busy_gpu_hours * price_per_gpu_hour           # -> breakdown.gpu_busy
+idle   = used - busy                                   # -> breakdown.gpu_idle
+unused = max(0, cost - used)                           # -> breakdown.gpu_unused
 ```
 
-`instances` = workers ÷ workers per instance, rounded up, averaged over the stage if the number of workers changes (`pricing.instances`); workers per instance = GPUs per instance ÷ `worker.hw.tp`, rounded down. "X of Y GPUs used" compares the workers' GPUs with the GPUs of the rented instances.
+`tp` is `worker.hw.tp`; `provisioned_gpu_hours` and `busy_gpu_hours` are in `usage` (see below). "X of Y GPUs used" compares the workers' GPUs (`mean_workers * tp`) with the GPUs of the rented instances (`instances * gpus_per_instance`).
 
 - **Workers** come from the router, which records the number of active workers once per simulated second (`Router._per_second_stats`). A stage shorter than one second has no samples and uses `simulation.num_workers`.
-- **Instances**: a worker's `worker.hw.tp` GPUs must fit in one instance (Opal doesn't model traffic between instances), so an instance holds ⌊GPUs per instance ÷ `tp`⌋ workers, and instance types with fewer GPUs than `tp` are skipped. For each sample, instances needed = ⌈workers ÷ workers per instance⌉; their mean over the stage × stage duration = instance-hours. This stays exact when the router adds workers.
-- **Choice**: in each region, the instance type with the lowest cost per hour (instances × instance price; the same ranking as the total, and still defined for a stage that never ran); on a tie, the one needing fewer instances. With `region` unset, the cheapest region.
-- **Busy, idle and unused**: the GPU-hours of the workers (mean workers × `tp` × duration) are split into `gpu_busy`, while a batch runs, and `gpu_idle`, the rest (e.g. every session waiting on a tool). `gpu_unused` is the rest of the bill, i.e. GPUs rented with the instance that hold no worker. All three are priced at instance price ÷ GPUs per instance. The console line shows `X of Y GPUs used` and the busy share.
-- **Busy time** comes from the router, which records once per simulated second the GPU-busy seconds that all workers added in that second (`per_unit_gpu_busy_time`, see [[Statistics collection and processing]]). Their sum over the stage × `tp` = busy GPU-hours. A batch counts when it ends, so one that crosses a stage boundary lands in the later stage; busy is capped at the workers' GPU-hours.
+- **Instances**: a worker's `worker.hw.tp` GPUs must fit in one instance (Opal doesn't model traffic between instances), so an instance holds `floor(gpus_per_instance / tp)` workers, and instance types with fewer GPUs than `tp` are skipped. Each per-second sample needs `ceil(workers / workers_per_instance)` instances; `instances` is their mean over the stage and `instances * hours` the instance-hours. This stays exact when the router adds workers.
+- **Choice**: in each region, the instance type with the lowest cost per hour (`instances * instance_price_per_hour`; the same ranking as the total, and still defined for a stage that never ran); on a tie, the one needing fewer instances. With `region` unset, the cheapest region.
+- **Busy, idle and unused**: the GPU-hours of the workers (`provisioned_gpu_hours = mean_workers * tp * duration / 3600`) are split into `gpu_busy`, while a batch runs, and `gpu_idle`, the rest (e.g. every session waiting on a tool). `gpu_unused` is the rest of the bill, i.e. GPUs rented with the instance that hold no worker. All three are priced at `price_per_gpu_hour`. The console line shows `X of Y GPUs used` and the busy share.
+- **Busy time** comes from the router, which records once per simulated second the GPU-busy seconds that all workers added in that second (`per_unit_gpu_busy_time`, see [[Statistics collection and processing]]). `busy_gpu_hours = sum(per_unit_gpu_busy_time) * tp / 3600`. A batch counts when it ends, so one that crosses a stage boundary lands in the later stage; `busy_gpu_hours` is capped at `provisioned_gpu_hours`.
 
 Assumptions to keep in mind when reading the numbers:
 
@@ -128,6 +134,42 @@ Assumptions to keep in mind when reading the numbers:
 3. Cite the paper it reproduces in the docstring, add a test with hand-checkable numbers in `tests/test_cost_model.py`, and describe it in this page.
 
 If a policy needs a quantity that `stage_usage()` doesn't return yet, add it there from the stage statistics.
+
+## Per-session cost
+
+For an agent trace (the OTel trace replay, where every request carries a `session_id`), each stage's bill is also split between sessions:
+
+```
+session_cost    = gpu_busy * weighted_tokens / total_weighted_tokens
+                + (gpu_idle + gpu_unused) * time_open / total_time_open
+
+weighted_tokens = token_weights.output * output_tokens
+                + token_weights.recomputed_input * (input_tokens - cached_tokens)
+                + token_weights.cached_input * cached_tokens
+time_open       = last_completion - first_arrival   # of the session's requests, at the router
+```
+
+Token counts are summed over the session's requests, and `total_*` over all sessions of the stage. `cached_tokens` is the input served from the KV cache (`raw_kvc_hit_tokens`); the rest of the input is recomputed. The per-session costs add up to the stage total. It needs `raw_session_ids` and `arrival_completion_times` from the stage statistics ([[Statistics collection and processing]]).
+
+**Choosing `token_weights`.** Only the ratios matter, since the split shares a known bill. Take them from published numbers of real serving systems rather than from the simulator, so they can be checked:
+
+- **recomputed input:** large-scale DeepSeek serving measures an uncached input token at about 0.43–0.46 of an output token: SGLang on 96 H100 serves 52.3k input and 22.3k output tokens/s per node ([LMSYS, 2025](https://lmsys.org/blog/2025-05-05-large-scale-ep/)), and DeepSeek's own fleet 73.7k and 14.8k with 56% of the input cached ([DeepSeek, 2025](https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md)). List prices put it at 0.2–0.33 ([Anthropic](https://platform.claude.com/docs/en/about-claude/pricing), [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing), October 2026);
+- **cached input:** no measured figure is published; list prices charge 0.005–0.02 of an output token.
+
+The default is the middle of those ranges:
+
+```json
+"token_weights": {"output": 1.0, "recomputed_input": 0.3, "cached_input": 0.01}
+```
+
+The weights are not derived from Opal's own timing model, so the split follows published serving costs and can differ from the step times Opal simulates. To charge output tokens only, set the other two weights to 0.
+
+Assumptions:
+
+- The `cached_input` weight covers serving cached tokens only; keeping the KV between turns is a storage cost with no line yet.
+- Idle is split by time open. A trace replay has a fixed list of sessions, so it ends with a tail where the last sessions run alone and the GPUs mostly wait; bigger setups wait longer in it. When comparing setups, keep in mind (or leave out) that tail.
+- The split uses the `gpu_hour_rental` breakdown lines (`gpu_busy`, `gpu_idle`, `gpu_unused`).
+- A session that spans two stages is split per stage.
 
 ## Price profiles
 
@@ -151,6 +193,16 @@ Profiles are dated JSON snapshots under `cost-profiles/`, so a run's cost is rep
 
 Prices are per hour for the whole instance. Add a new dated file rather than editing an old one, so earlier results stay reproducible.
 
+No profile ships with the repository. To try the cost layer, save the example above as a file (e.g. `cost-profiles/cloud/aws-example.json`) and point `cost.profile` to it: `configs/defaults.json` then runs on one `p5.48xlarge`, 1 of 8 GPUs used.
+
 ## Planned
 
-Following [#58](https://github.com/IBM/opal-sim/issues/58): storage cost (DRAM/SSD GB-hours per tier), per-session cost, a provisioning diagnosis (over/under-provisioned, bottleneck), on-prem TCO profiles, and pricing tool execution on CPU servers separately from the LLM on GPU servers.
+Following [#58](https://github.com/IBM/opal-sim/issues/58): storage cost (DRAM/SSD GB-hours per tier), a provisioning diagnosis (over/under-provisioned, bottleneck), on-prem TCO profiles, and pricing tool execution on CPU servers separately from the LLM on GPU servers.
+
+## See also
+
+- [[Configuration Simulation]] — the `cost` keys next to every other config section.
+- [[Statistics collection and processing]] — the stage statistics the cost layer reads: `per_unit_workers`, `per_unit_gpu_busy_time`, `raw_session_ids`, `arrival_completion_times`.
+- [[Router]] — `_per_second_stats`, which samples the worker count and the GPU-busy seconds once per simulated second.
+- [[OTel Trace Replay]] — the workload that sets `session_id`, which the per-session split needs.
+- [[Testing]] — what `tests/test_cost_model.py` covers.
