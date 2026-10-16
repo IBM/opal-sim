@@ -3,6 +3,7 @@
 
 Usage:
     python -m opal.cost simulation-runs/sim-<timestamp> [--region us-west-2] [--pricing spot] [--no-write]
+    python -m opal.cost simulation-runs/sim-<timestamp> --billing-increment-s 3600 --billing-minimum-s 3600
 """
 
 import argparse
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from opal.cost.cost_model import report_run_cost
 
-OPTIONS = ("profile", "policy", "region", "pricing", "instance_type")
+OPTIONS = ("profile", "policy", "region", "pricing", "instance_type", "billing_increment_s", "billing_minimum_s")
 
 
 def main(argv: list[str] | None = None) -> list[dict]:
@@ -22,7 +23,13 @@ def main(argv: list[str] | None = None) -> list[dict]:
     parser.add_argument("--region", help="region to price in (default: the cheapest one)")
     parser.add_argument("--pricing", help="on_demand or spot")
     parser.add_argument("--instance-type", dest="instance_type", help="restrict to one instance type")
-    parser.add_argument("--no-write", action="store_true", help="only print, don't write opal_cost.json")
+    parser.add_argument(
+        "--billing-increment-s", dest="billing_increment_s", type=float, help="billing step in seconds (0 = exact)"
+    )
+    parser.add_argument(
+        "--billing-minimum-s", dest="billing_minimum_s", type=float, help="minimum billed seconds per instance"
+    )
+    parser.add_argument("--no-write", action="store_true", help="only print, don't write opal_cost.json and plots")
     args = parser.parse_args(argv)
 
     config = json.loads((args.run_dir / "sim_config.json").read_text())

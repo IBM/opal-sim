@@ -149,6 +149,7 @@ opal-sim/
 │   ├── cost/                      # Cost layer (opt-in "cost" config section)
 │   │   ├── cost_model.py          # stage_usage, gpu_instances, POLICIES (gpu_hour_rental),
 │   │   │                          # price_run / report_run_cost -> stage_N/opal_cost.json
+│   │   ├── plots.py               # cost-*.png next to opal_cost.json (breakdown, GPU busy CDF, sessions)
 │   │   └── __main__.py            # python -m opal.cost <run_dir>: price a finished run
 │   │
 │   ├── workloads/                 # Workload generators
@@ -593,8 +594,13 @@ All in `opal/cost/cost_model.py`, as plain functions:
 - **Price profile** (`gpu_instances`) - dated JSON under `cost-profiles/`
 - **Policy** - one function per cost method from a paper, registered in
   `POLICIES`; first one: `gpu_hour_rental` (whole instance-hours x instance price)
-- **Report** (`price_run`, `report_run_cost`) - `stage_N/opal_cost.json` +
-  console summary; `python -m opal.cost <run_dir>` prices a finished run offline
+- **Report** (`price_run`, `report_run_cost`) - `stage_N/opal_cost.json` (keys carry
+  units: `_usd`, `_s`, `_pct`) + console summary + `cost-*.png` plots (`plots.py`);
+  `python -m opal.cost <run_dir>` prices a finished run offline
+- The cost is a lower bound (instances start/stop instantly, billed exactly);
+  `cost.billing_increment_s` / `billing_minimum_s` add a cloud's billing rounding
+- "GPU idle" (worker up, no batch) is not a "session gap" (session open, no request at
+  the LLM); keep the two terms apart
 
 See `wiki/Cost-Model.md` for the config keys, report fields and how to add a policy.
 
@@ -1019,7 +1025,7 @@ LLM inference:         opal/llm_inference/ (opal_model.py, config_loader.py,
                        roofline_inference_model.py, legacy_gpu_model.py,
                        inference_model_factory.py, inference_engine.py)
 Config system:         opal/config/opal_config.py
-Cost model:            opal/cost/cost_model.py (+ __main__.py for offline pricing)
+Cost model:            opal/cost/cost_model.py (+ plots.py, __main__.py)
 Utilities:             opal/utils/util.py
 Default config:        configs/defaults.json
 Model configs:         model-configs/

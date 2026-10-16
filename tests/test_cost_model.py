@@ -7,7 +7,14 @@ import pytest
 from opal.config.opal_config import OpalConfig
 from opal.core.opal import OpalSimulator
 from opal.cost.__main__ import main as cost_main
-from opal.cost.cost_model import COST_FILE, gpu_instances, price_run, stage_usage
+from opal.cost.cost_model import (
+    COST_FILE,
+    format_report,
+    gpu_instances,
+    at_llm_seconds,
+    price_run,
+    stage_usage,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,7 +43,7 @@ CONFIG = {"worker": {"hw": {"gpu": "H100", "tp": 2}}, "simulation": {"num_worker
 HW = CONFIG["worker"]["hw"]
 
 
-def make_stage(duration=3600.0, workers=(3, 3), busy=(4050.0, 4050.0), tokens=((100, 10), (300, 90))):
+def make_stage(duration=3600.0, workers=(3, 3), busy=(4050.0, 4050.0), tokens=((100, 10), (300, 90)), cached=None):
     return {
         "stage_time_start": 0.0,
         "stage_time_end": duration,
@@ -44,6 +51,7 @@ def make_stage(duration=3600.0, workers=(3, 3), busy=(4050.0, 4050.0), tokens=((
         "per_unit_gpu_busy_time": list(busy),
         "finished_requests": len(tokens),
         "input_output_tokens_sz": [list(t) for t in tokens],
+        "raw_kvc_hit_tokens": list(cached) if cached else [0] * len(tokens),
     }
 
 
@@ -73,6 +81,10 @@ def price(profile_file, workers=(3, 3), hw=HW, **cost_config):
 def price_sessions(profile_file, **cost_config):
     [report] = price_run([SESSION_STAGE], CONFIG, {"profile": profile_file, "region": "r1", **cost_config})
     return report["sessions"]
+
+
+def session_cost(sessions):
+    return {sid: s["cost_usd"] for sid, s in sessions["per_session"].items()}
 
 
 def write_cost_config(tmp_path, cost):
@@ -107,7 +119,7 @@ class TestGpuInstances:
     def test_lists_every_instance_type_and_region_offering_the_gpu(self):
         options = gpu_instances(PROFILE, "h100")
 
-        assert sorted((o["region"], o["instance_type"], o["price_per_gpu_hour"]) for o in options) == [
+        assert sorted((o["region"], o["instance_type"], o["usd_per_gpu_hour"]) for o in options) == [
             ("r1", "big.8gpu", 10.0),
             ("r1", "small.2gpu", 10.0),
             ("r1", "tiny.1gpu", 9.0),
@@ -137,7 +149,7 @@ class TestStageUsage:
 
         assert usage["provisioned_gpu_hours"] == pytest.approx(6.0)
         assert usage["busy_gpu_hours"] == pytest.approx(4.5)
-        assert usage["busy_share"] == pytest.approx(0.75)
+        assert usage["busy_pct"] == pytest.approx(75.0)
 
     def test_token_and_request_totals(self):
         usage = stage_usage(make_stage(), HW, 3)
@@ -151,7 +163,7 @@ class TestStageUsage:
         usage = stage_usage(make_stage(busy=(9000.0, 9000.0)), HW, 3)
 
         assert usage["busy_gpu_hours"] == pytest.approx(6.0)
-        assert usage["busy_share"] == 1.0
+        assert usage["busy_pct"] == 100.0
 
     def test_mean_of_worker_samples_under_autoscaling(self):
         usage = stage_usage(make_stage(workers=(1, 1, 2, 4)), HW, 1)
@@ -169,7 +181,7 @@ class TestStageUsage:
         usage = stage_usage({**make_stage(), "stage_time_start": -1, "stage_time_end": -1}, HW, 3)
 
         assert usage["provisioned_gpu_hours"] == 0.0
-        assert usage["busy_share"] == 0.0
+        assert usage["busy_pct"] == 0.0
 
 
 class TestGpuHourRental:
@@ -178,16 +190,17 @@ class TestGpuHourRental:
         report = price(profile_file, region="r1")
 
         assert report["pricing"]["instance_type"] == "small.2gpu"
-        assert report["total"] == pytest.approx(60.0)
+        assert report["total_usd"] == pytest.approx(60.0)
 
     def test_workers_gpus_split_into_busy_and_idle(self, profile_file):
         # The $60 of the workers' GPUs is 75% busy: $45 busy, $15 idle; every rented GPU holds a worker.
         report = price(profile_file, region="r1")
 
-        assert report["breakdown"] == {
+        assert report["breakdown_usd"] == {
             "gpu_busy": pytest.approx(45.0),
             "gpu_idle": pytest.approx(15.0),
             "gpu_unused": pytest.approx(0.0),
+            "billing_rounding": 0.0,
         }
         assert report["pricing"]["gpus_used"] == 6.0
         assert report["pricing"]["gpus_rented"] == 6.0
@@ -196,11 +209,12 @@ class TestGpuHourRental:
         # One 8-GPU instance for 6 GPUs: pay $80, of which 6 GPU-hours x $10 hold workers.
         report = price(profile_file, region="r1", instance_type="big.8gpu")
 
-        assert report["total"] == pytest.approx(80.0)
-        assert report["breakdown"] == {
+        assert report["total_usd"] == pytest.approx(80.0)
+        assert report["breakdown_usd"] == {
             "gpu_busy": pytest.approx(45.0),
             "gpu_idle": pytest.approx(15.0),
             "gpu_unused": pytest.approx(20.0),
+            "billing_rounding": 0.0,
         }
         assert report["pricing"]["gpus_used"] == 6.0
         assert report["pricing"]["gpus_rented"] == 8.0
@@ -209,20 +223,20 @@ class TestGpuHourRental:
         # Autoscaling: ceil(5 / 4) = 2 instances in the last sample -> 1.25 instances on average.
         report = price(profile_file, workers=(1, 1, 2, 5), region="r1", instance_type="big.8gpu")
 
-        assert report["total"] == pytest.approx(100.0)
+        assert report["total_usd"] == pytest.approx(100.0)
         assert report["pricing"]["gpus_used"] == 4.5
         assert report["pricing"]["gpus_rented"] == 10.0
 
     def test_per_request_and_per_1M_tokens(self, profile_file):
         report = price(profile_file, region="r1")
 
-        assert report["per_request"] == pytest.approx(30.0)
-        assert report["per_1M_tokens"] == pytest.approx(60.0 / 500 * 1e6)
+        assert report["per_request_usd"] == pytest.approx(30.0)
+        assert report["per_1M_tokens_usd"] == pytest.approx(60.0 / 500 * 1e6)
 
     def test_by_region_cheapest_first(self, profile_file):
         report = price(profile_file, region="r1")
 
-        assert [(r["region"], r["cost"]) for r in report["by_region"]] == [("r1", 60.0), ("r2", 64.0)]
+        assert [(r["region"], r["cost_usd"]) for r in report["by_region"]] == [("r1", 60.0), ("r2", 64.0)]
 
     def test_default_region_is_the_cheapest(self, profile_file):
         assert price(profile_file)["pricing"]["region"] == "r1"
@@ -232,11 +246,12 @@ class TestGpuHourRental:
         report = price(profile_file, pricing="spot")
 
         assert report["pricing"]["instance_type"] == "big.8gpu"
-        assert report["total"] == pytest.approx(24.0)
-        assert report["breakdown"] == {
+        assert report["total_usd"] == pytest.approx(24.0)
+        assert report["breakdown_usd"] == {
             "gpu_busy": pytest.approx(13.5),
             "gpu_idle": pytest.approx(4.5),
             "gpu_unused": pytest.approx(6.0),
+            "billing_rounding": 0.0,
         }
 
     def test_policy_and_pricing_names_are_case_insensitive(self, profile_file):
@@ -249,8 +264,115 @@ class TestGpuHourRental:
         # It costs 0 everywhere, but 3 x $20 per hour still beats 1 x $80.
         [report] = price_run([make_stage(duration=0.0)], CONFIG, {"profile": profile_file, "region": "r1"})
 
-        assert report["total"] == 0.0
+        assert report["total_usd"] == 0.0
         assert report["pricing"]["instance_type"] == "small.2gpu"
+
+
+class TestBilling:
+    def test_exact_by_default(self, profile_file):
+        report = price(profile_file, region="r1")
+
+        assert report["billing"] == {"increment_s": 0.0, "minimum_s": 0.0, "exact": True}
+        assert report["breakdown_usd"]["billing_rounding"] == 0.0
+
+    def test_hourly_billing_of_a_whole_hour_adds_nothing(self, profile_file):
+        report = price(profile_file, region="r1", billing_increment_s=3600, billing_minimum_s=3600)
+
+        assert report["total_usd"] == pytest.approx(60.0)
+        assert report["billing"]["exact"] is False
+
+    def test_hourly_billing_rounds_each_instance_up(self, profile_file):
+        # 30 min on 3 x small.2gpu ($20/h each), billed as 3 whole hours: $30 exact + $30 rounding.
+        config = {"worker": {"hw": HW}, "simulation": {"num_workers": 3}}
+        cost = {"profile": profile_file, "region": "r1", "billing_increment_s": 3600}
+        [report] = price_run([make_stage(duration=1800.0, busy=(2025.0, 2025.0))], config, cost)
+
+        assert report["total_usd"] == pytest.approx(60.0)
+        assert report["breakdown_usd"]["billing_rounding"] == pytest.approx(30.0)
+        assert report["gpu_hours"]["billing_rounding"] == pytest.approx(3.0)
+
+    def test_minimum_billed_time(self, profile_file):
+        # AWS-style (per second, 60 s minimum): a 30 s stage on 3 x small.2gpu is billed 60 s per instance.
+        config = {"worker": {"hw": HW}, "simulation": {"num_workers": 3}}
+        cost = {"profile": profile_file, "region": "r1", "billing_increment_s": 1, "billing_minimum_s": 60}
+        [report] = price_run([make_stage(duration=30.0, busy=(0.0,))], config, cost)
+
+        assert report["breakdown_usd"]["billing_rounding"] == pytest.approx(3 * 20.0 * 30 / 3600)
+
+    def test_instance_added_late_is_rounded_from_its_start(self, profile_file):
+        # 1, 1, 2, 5 workers on big.8gpu: the 2nd instance runs only the last 900 s and is billed a whole hour.
+        report = price(
+            profile_file, workers=(1, 1, 2, 5), region="r1", instance_type="big.8gpu", billing_increment_s=3600
+        )
+
+        assert report["breakdown_usd"]["billing_rounding"] == pytest.approx(0.75 * 80.0)
+        assert report["total_usd"] == pytest.approx(100.0 + 60.0)
+
+    def test_by_region_includes_rounding(self, profile_file):
+        report = price(profile_file, workers=(1, 1, 2, 5), instance_type="big.8gpu", billing_increment_s=3600)
+
+        assert [(r["region"], r["cost_usd"]) for r in report["by_region"]] == [("r2", 128.0), ("r1", 160.0)]
+
+    def test_console_shows_billing_and_zero_lines_only_when_they_cost(self, profile_file):
+        exact = "\n".join(format_report(price(profile_file, region="r1")))
+        hourly = price(
+            profile_file, workers=(1, 1, 2, 5), region="r1", instance_type="big.8gpu", billing_increment_s=3600
+        )
+        hourly = "\n".join(format_report(hourly))
+
+        assert "billing" not in exact and "GPU unused" not in exact  # 3 x small.2gpu: every GPU holds a worker
+        assert "billing   in 3600 s steps, 0 s minimum per instance" in hourly
+        assert "billing rounding" in hourly and "GPU unused" in hourly
+
+    def test_negative_billing_is_rejected(self, profile_file):
+        with pytest.raises(ValueError, match="billing_increment_s"):
+            price(profile_file, billing_increment_s=-1)
+
+
+class TestTokenPrices:
+    # 1,100 input tokens of which 100 cached -> 1,000 recomputed; 100 output. On 3 x small.2gpu in r1 for $60.
+    STAGE = make_stage(tokens=((600, 50), (500, 50)), cached=(100, 0))
+
+    def price(self, profile_file, **cost_config):
+        [report] = price_run([self.STAGE], CONFIG, {"profile": profile_file, "region": "r1", **cost_config})
+        return report
+
+    def test_bill_split_by_weighted_tokens(self, profile_file):
+        # Weights 1 / 0.5 / 0: 100 + 0.5 * 1,000 = 600 weighted tokens share $60 -> $0.1 per output token.
+        report = self.price(profile_file, token_weights={"recomputed_input": 0.5, "cached_input": 0})
+
+        assert report["per_1M_tokens_by_kind_usd"] == {
+            "output": pytest.approx(100_000.0),
+            "recomputed_input": pytest.approx(50_000.0),
+            "cached_input": 0.0,
+        }
+        assert report["usage"]["cached_input_tokens"] == 100
+
+    def test_prices_add_back_up_to_the_bill(self, profile_file):
+        report = self.price(profile_file)
+        prices, u = report["per_1M_tokens_by_kind_usd"], report["usage"]
+        billed = (
+            prices["output"] * u["output_tokens"]
+            + prices["recomputed_input"] * (u["input_tokens"] - u["cached_input_tokens"])
+            + prices["cached_input"] * u["cached_input_tokens"]
+        ) / 1e6
+
+        assert billed == pytest.approx(report["total_usd"])
+
+    def test_console_line(self, profile_file):
+        lines = format_report(self.price(profile_file, token_weights={"recomputed_input": 0.5, "cached_input": 0}))
+
+        assert "run       3,600.0 s = 1.000 h, 2 requests, 1,100 input (9% cached) + 100 output tokens" in lines
+        assert (
+            "per 1M    100000.000 USD output, 50000.000 USD recomputed input, 0.000 USD cached input"
+            " (token weights 1 / 0.5 / 0)" in lines
+        )
+
+    def test_no_tokens_no_prices(self, profile_file):
+        [report] = price_run([make_stage(tokens=())], CONFIG, {"profile": profile_file, "region": "r1"})
+
+        assert report["per_1M_tokens_by_kind_usd"] is None
+        assert "per 1M    no tokens" in format_report(report)
 
 
 class TestPriceRunErrors:
@@ -270,36 +392,71 @@ class TestPriceRunErrors:
         with pytest.raises(ValueError, match="GPUs of a worker"):
             price(profile_file, hw={"gpu": "H100", "tp": 16})
 
+    def test_profile_not_in_usd(self, tmp_path):
+        path = tmp_path / "eur.json"
+        path.write_text(json.dumps({**PROFILE, "currency": "EUR"}))
+
+        with pytest.raises(ValueError, match="reports USD"):
+            price_run([make_stage()], CONFIG, {"profile": str(path)})
+
 
 class TestSessionCosts:
     def test_output_only_weights(self, profile_file):
         # The $45 busy split 40 : 60 by output tokens, the $15 idle 40 s : 60 s by time open.
         sessions = price_sessions(profile_file, token_weights={"recomputed_input": 0, "cached_input": 0})
 
-        assert sessions["per_session"] == {"a": pytest.approx(18.0 + 6.0), "b": pytest.approx(27.0 + 9.0)}
+        assert session_cost(sessions) == {"a": pytest.approx(18.0 + 6.0), "b": pytest.approx(27.0 + 9.0)}
 
     def test_summary_over_sessions(self, profile_file):
         sessions = price_sessions(profile_file, token_weights={"recomputed_input": 0, "cached_input": 0})
 
         assert sessions["sessions"] == 2
-        assert sessions["median"] == pytest.approx(30.0)
-        assert sessions["max"] == pytest.approx(36.0)
+        assert sessions["median_usd"] == pytest.approx(30.0)
+        assert sessions["max_usd"] == pytest.approx(36.0)
 
     def test_token_weights_change_the_busy_split(self, profile_file):
         # A recomputed input token weighs half an output token: busy split 40 + 20 : 60 + 150.
         sessions = price_sessions(profile_file, token_weights={"recomputed_input": 0.5, "cached_input": 0})
 
-        assert sessions["per_session"] == {"a": pytest.approx(10.0 + 6.0), "b": pytest.approx(35.0 + 9.0)}
-        assert sessions["token_weights"] == {"output": 1.0, "recomputed_input": 0.5, "cached_input": 0}
+        assert session_cost(sessions) == {"a": pytest.approx(10.0 + 6.0), "b": pytest.approx(35.0 + 9.0)}
+
+    def test_token_weights_are_reported(self, profile_file):
+        report = price(profile_file, token_weights={"recomputed_input": 0.5, "cached_input": 0})
+
+        assert report["token_weights"] == {"output": 1.0, "recomputed_input": 0.5, "cached_input": 0}
 
     def test_default_token_weights(self, profile_file):
-        sessions = price_sessions(profile_file)
-
-        assert sessions["token_weights"] == {"output": 1.0, "recomputed_input": 0.3, "cached_input": 0.01}
+        assert price(profile_file)["token_weights"] == {"output": 1.0, "recomputed_input": 0.3, "cached_input": 0.01}
 
     def test_unknown_weight_name_is_rejected(self, profile_file):
         with pytest.raises(ValueError, match="token_weights"):
             price_sessions(profile_file, token_weights={"input": 1.0})
+
+    def test_time_at_the_llm_and_in_gaps(self, profile_file):
+        # a: open 0-40 s, requests 0-10 and 20-40 -> 30 s at the LLM, a 10 s gap; b: one request over its 60 s.
+        sessions = price_sessions(profile_file)
+
+        assert sessions["per_session"]["a"] | {"cost_usd": None} == {
+            "open_s": 40.0,
+            "at_llm_s": 30.0,
+            "gap_s": 10.0,
+            "cost_usd": None,
+        }
+        assert sessions["per_session"]["b"]["gap_s"] == 0.0
+        assert sessions["gap_pct"] == pytest.approx(10.0)  # 10 s of 100 s open
+        # Means add up: 50 s open = 45 s at the LLM + 5 s in gaps.
+        assert (sessions["mean_open_s"], sessions["mean_at_llm_s"], sessions["mean_gap_s"]) == (50.0, 45.0, 5.0)
+
+    def test_overlapping_requests_count_once_at_the_llm(self):
+        assert at_llm_seconds([(5.0, 20.0), (0.0, 10.0), (30.0, 40.0)]) == 30.0
+
+    def test_billing_rounding_is_split_by_time_open(self, profile_file):
+        # Hourly billing of a 1 h stage adds nothing; billing per 7200 s adds a $60 hour, split 40 : 60 like idle.
+        sessions = price_sessions(
+            profile_file, billing_increment_s=7200, token_weights={"recomputed_input": 0, "cached_input": 0}
+        )
+
+        assert session_cost(sessions) == {"a": pytest.approx(18.0 + 6.0 + 24.0), "b": pytest.approx(27.0 + 9.0 + 36.0)}
 
     def test_no_session_ids_means_no_split(self, profile_file):
         # Every workload but the OTel trace replay.
@@ -312,8 +469,8 @@ class TestEndToEnd:
     def test_report_written_per_stage(self, cost_run_dir):
         report = json.loads((cost_run_dir / "stage_0" / COST_FILE).read_text())
 
-        assert report["total"] > 0
-        assert report["total"] == pytest.approx(sum(report["breakdown"].values()))
+        assert report["total_usd"] > 0
+        assert report["total_usd"] == pytest.approx(sum(report["breakdown_usd"].values()))
         assert report["pricing"]["instance_type"] == "tiny.1gpu"
         assert report["pricing"]["gpus_used"] == 1.0
         assert report["pricing"]["gpus_rented"] == 1.0
@@ -323,17 +480,29 @@ class TestEndToEnd:
         report = json.loads((cost_run_dir / "stage_0" / COST_FILE).read_text())
         log = (cost_run_dir / "simulation.log").read_text()
 
-        busy = f"{report['usage']['busy_share']:.0%} busy"
-        assert f"stage_0: {report['total']:.4f} USD | 1 x tiny.1gpu, r1, on_demand | 1 of 1 GPUs used, {busy}" in log
+        assert "===== cost: stage_0 =====" in log
+        assert "setup     1 x tiny.1gpu (1 x H100 each), r1, on_demand: 9.00 USD/h per instance" in log
+        assert f"cost      {report['total_usd']:.4f} USD (" in log
+        # Exact billing prints no billing line, and lines that cost nothing (unused GPUs, rounding) get no row.
+        assert "billing" not in log.split("===== cost: stage_0")[1]
+        assert "GPU unused" not in log
+        busy = report["breakdown_usd"]["gpu_busy"]
+        assert f"{100 * busy / report['total_usd']:.1f}%{busy:>12.4f}" in log  # the GPU busy row: share and USD
         # Stage 1 never starts in 10 s: it costs nothing but still names the 1-GPU instance.
-        assert "stage_1: 0.0000 USD | 1 x tiny.1gpu, r1, on_demand | 1 of 1 GPUs used, 0% busy" in log
+        assert "cost      0.0000 USD (no requests)\nper 1M    no tokens" in log
+        assert f"total     {report['total_usd']:.4f} USD over 2 stage(s)" in log
+
+    def test_plots_written_next_to_the_report(self, cost_run_dir):
+        assert (cost_run_dir / "stage_0" / "cost-breakdown.png").stat().st_size > 0
+        assert (cost_run_dir / "stage_0" / "cost-gpu-busy.png").stat().st_size > 0
+        assert not (cost_run_dir / "stage_0" / "cost-sessions.png").exists()  # no sessions in defaults.json
 
     def test_offline_pricing_matches_the_run(self, cost_run_dir):
         report = json.loads((cost_run_dir / "stage_0" / COST_FILE).read_text())
 
         offline = cost_main([str(cost_run_dir), "--no-write"])
 
-        assert offline[0]["total"] == pytest.approx(report["total"])
+        assert offline[0]["total_usd"] == pytest.approx(report["total_usd"])
 
     def test_busy_seconds_add_up_to_gpu_utilization(self, cost_run_dir):
         # One worker in a stage that starts at t = 0: busy seconds = Opal's cumulative utilization x time.
