@@ -110,6 +110,7 @@ At the end of a run, `OpalSimulator._process_per_stage()` (`opal/core/opal.py`) 
 1. Prints a `===== stage_N =====` header and calls `StageStatistics.print_summary_results(log_file=...)`, writing the vLLM-style benchmark block both to stdout and to `simulation.log` (this is the mechanism behind "Write stage summary statistics to simulation.log").
 2. If `-g`/`--graphs` was passed, calls `simend_plot(stats, config, stage_dir)` (`opal/stats/plot.py`), which produces the CDF, throughput, worker-count, GPU-utilization, and histogram PDFs for that stage.
 3. Separately, `OpalSimulatorEnvironment.write_simulation_data()` (`opal/core/environment.py`) — invoked from `OpalSimulator.run()` when `simulation.save_simulation_data` is `true` (see [[Configuration Simulation]]) — writes each stage's full `StageStatistics.to_dict()` to `stage_N/opal_stats.json`.
+4. After these, if the config has a `cost` section, `OpalSimulator.run()` calls `_report_cost()`, which prices every stage from `StageStatistics.to_dict()` and prints the cost summary (see [[Cost Model]]).
 
 The exact set of per-stage files (`cdf-latencies.pdf`, `gpu-utilization-per-sec.pdf`, `histo-latencies.pdf`, `thrp-request-sec.pdf`, `thrp-workers-sec.pdf`, `opal_stats.json`) and top-level files (`sim_config.json`, `simulation.log`) is documented in the README's "What are simulation outputs" and "Logging" sections — refer there for the canonical list; this page only explains how each file's content is produced.
 

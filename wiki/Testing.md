@@ -67,20 +67,14 @@ Synthetic config dicts (no network access, no fixtures) that must be rejected wi
 
 Unit tests use a small hand-made price profile, so every expected number can be checked by hand. See [[Cost Model]].
 
-- **`TestGpuInstances`** — every instance type and region offering a GPU (case-insensitive), spot prices, the `instance_type` filter; errors list the available GPUs / pricing models.
-- **`TestStageUsage`** — provisioned GPU-hours (`mean_workers * tp * duration`); busy GPU-hours (`sum(per_unit_gpu_busy_time) * tp`) and `busy_pct`, capped at what was provisioned; the share of the stage at each worker count; token and request totals; fallback to `simulation.num_workers` when a stage has no samples; a stage that never ran costs nothing.
-- **`TestGpuHourRental`** — whole instances are billed: the cheapest instance type per region, instances too small for one worker skipped, `gpu_busy` / `gpu_idle` / `gpu_unused` (and a zero `billing_rounding`) and `gpus_used` / `gpus_rented` (e.g. 6/8 GPUs on one 8-GPU instance), instance counts per sample under autoscaling, per-request and per-1M-token values, the `by_region` ranking; the default region is the cheapest; on a cost tie the option with fewer instances wins; policy and pricing names are case-insensitive; a zero-length stage is still ranked by cost per hour.
-- **`TestBilling`** — billing granularity: exact by default (`billing.exact`, no rounding); hourly billing of a whole hour adds nothing; 30 min on three instances billed per hour adds three half-hours (`breakdown_usd` and `gpu_hours`); a 60 s minimum on a 30 s stage; an instance the router adds late is rounded from its own start; `by_region` includes the rounding; the console prints a billing line and the `GPU unused` / `billing rounding` rows only when they cost something; negative values are rejected.
-- **`TestTokenPrices`** — the price per 1M tokens of each kind: the bill split by weighted tokens (hand-checked with weights 1 / 0.5 / 0), the cached input tokens in `usage`, the prices adding back up to the bill with the default weights, the console `run` and `per 1M` lines, and no prices for a stage without tokens.
-- **`TestPriceRunErrors`** — errors for a missing profile, an unknown policy, a region without a price, a worker (`tp`) larger than any instance, and a profile not in USD.
-- **`TestSessionCosts`** — the per-session split on a stage with two sessions: with output-only weights `gpu_busy` follows output tokens and the rest follows time open (hand-checked dollars, median and max); `cost.token_weights` changes the busy split (a recomputed input token at half an output token) and is reported back; the defaults are 1 / 0.3 / 0.01; an unknown weight name is rejected; each session's time open, at the LLM and in gaps (the means add up), and `gap_pct`; overlapping requests count once at the LLM; billing rounding is split by time open; a stage without session ids has `sessions: null`.
-- **`TestEndToEnd`** — a 10 s run of `configs/defaults.json` plus a `cost` section pointing to the hand-made profile (fixture `cost_run_dir`):
-  - writes `stage_N/opal_cost.json` on a `tiny.1gpu`, 1 of 1 GPUs used, breakdown adding up to the total, no per-session split (the run has no sessions);
-  - appends the cost summary to `simulation.log` in the documented format: setup, cost with units, billing, the busy row of the table, the run total (stage 1, which never starts in 10 s, costs 0 with no requests);
-  - writes `cost-breakdown.png` and `cost-gpu-busy.png` next to the report, and no `cost-sessions.png` without sessions;
-  - `python -m opal.cost` on the same run folder gives the same total;
-  - with one worker in a stage that starts at t = 0, the router's per-second busy seconds add up to Opal's cumulative GPU utilization times the elapsed time (`utilization[-1] / 100 * len(utilization)`).
-  - Without a `cost` section no cost report is written (the cost layer is opt-in); an unknown `cost.policy` raises when `OpalSimulator` is built, before any run folder is created.
+- **`TestGpuInstances`** — instance types and regions offering a GPU, spot prices, the `instance_type` filter, errors.
+- **`TestStageUsage`** — provisioned and busy GPU-hours, token totals, autoscaling samples, stages with no samples or that never ran.
+- **`TestGpuHourRental`** — whole instances billed, cheapest instance per region, `gpu_busy` / `gpu_idle` / `gpu_unused`, `by_region` ranking, ties, case-insensitive names.
+- **`TestBilling`** — `billing_increment_s` / `billing_minimum_s`: exact by default, rounding per instance, instances the router adds late, invalid values.
+- **`TestTokenPrices`** — the price per 1M tokens of each kind adds back up to the bill; no prices without tokens.
+- **`TestPriceRunErrors`** — missing profile, unknown policy, region without a price, worker larger than any instance, profile not in USD.
+- **`TestSessionCosts`** — the per-session split (`gpu_busy` by weighted tokens, the rest by time open), `token_weights`, time at the LLM and in gaps, no split without session ids.
+- **`TestEndToEnd`** — a 10 s run of `configs/defaults.json` plus a `cost` section (fixture `cost_run_dir`): the report and the cost summary in `simulation.log`, no plots without `-g` (PDFs with `python -m opal.cost <run_dir> -g`), offline pricing gives the same total, busy seconds add up to Opal's GPU utilization, no report without a `cost` section, and a bad `cost` section fails before the run.
 
 ### `tests/test_device.py` — I/O device bandwidth/latency model
 

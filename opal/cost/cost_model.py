@@ -354,9 +354,11 @@ def format_report(r: dict) -> list[str]:
     return lines
 
 
-def report_run_cost(stages: list[dict], config, cost_config, output_dir: str | None = None, log_file=None):
-    """Price the run and print it (also to `log_file`). If `output_dir` is given, write stage_N/opal_cost.json and
-    the stage's cost plots next to it."""
+def report_run_cost(
+    stages: list[dict], config, cost_config, output_dir: str | None = None, log_file=None, plot_graphs: bool = False
+):
+    """Price the run and print it (also to `log_file`). If `output_dir` is given, write stage_N/opal_cost.json and,
+    with `plot_graphs` (the -g flag), the stage's cost plots next to it."""
     reports = price_run(stages, config, cost_config)
     lines = []
     for stage, r in zip(stages, reports, strict=True):
@@ -365,10 +367,11 @@ def report_run_cost(stages: list[dict], config, cost_config, output_dir: str | N
             stage_dir = os.path.join(output_dir, f"stage_{r['stage']}")
             with open(os.path.join(stage_dir, COST_FILE), "w") as f:
                 json.dump(r, f, indent=2)
-            # Imported here: matplotlib is only needed when plots are written.
-            from opal.cost.plots import plot_stage_cost
+            if plot_graphs:
+                # Imported here: matplotlib is only needed when plots are written.
+                from opal.cost.plots import plot_stage_cost
 
-            plot_stage_cost(stage, r, stage_dir)
+                plot_stage_cost(stage, r, stage_dir)
     lines.append("===== cost: run =====")
     lines.append(f"total     {sum(r['total_usd'] for r in reports):.4f} USD over {len(reports)} stage(s)")
     for line in lines:

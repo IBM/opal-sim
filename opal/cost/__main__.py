@@ -3,7 +3,7 @@
 
 Usage:
     python -m opal.cost simulation-runs/sim-<timestamp> [--region us-west-2] [--pricing spot] [--no-write]
-    python -m opal.cost simulation-runs/sim-<timestamp> --billing-increment-s 3600 --billing-minimum-s 3600
+    python -m opal.cost simulation-runs/sim-<timestamp> --billing-increment-s 3600 --billing-minimum-s 3600 -g
 """
 
 import argparse
@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> list[dict]:
     parser.add_argument(
         "--billing-minimum-s", dest="billing_minimum_s", type=float, help="minimum billed seconds per instance"
     )
+    parser.add_argument("-g", "--graphs", action="store_true", help="also write the cost plots (PDF)")
     parser.add_argument("--no-write", action="store_true", help="only print, don't write opal_cost.json and plots")
     args = parser.parse_args(argv)
 
@@ -41,7 +42,8 @@ def main(argv: list[str] | None = None) -> list[dict]:
     for option in OPTIONS:
         if getattr(args, option) is not None:
             cost_config[option] = getattr(args, option)
-    return report_run_cost(stages, config, cost_config, output_dir=None if args.no_write else str(args.run_dir))
+    output_dir = None if args.no_write else str(args.run_dir)
+    return report_run_cost(stages, config, cost_config, output_dir=output_dir, plot_graphs=args.graphs)
 
 
 if __name__ == "__main__":

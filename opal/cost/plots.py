@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Plots of the cost layer, written as PNG next to opal_cost.json (wiki/Cost-Model.md, "Plots")."""
+"""Plots of the cost layer, written as PDF next to opal_cost.json (wiki/Cost-Model.md, "Plots")."""
 
 import os
 import statistics
@@ -13,6 +13,10 @@ from opal.cost.cost_model import LINE_NAMES
 COLORS = {"gpu_busy": "#2a78d6", "gpu_idle": "#eb6834", "gpu_unused": "#1baf7a", "billing_rounding": "#eda100"}
 OTHER_COLOR = "#6250d6"
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#898781", "#e1e0d9", "#fcfcfb"
+
+
+def save_figure(fig, path: str):
+    fig.savefig(path, format="pdf", dpi=300, bbox_inches="tight")  # same as opal.stats.plot.save_plot
 
 
 def usd(value: float) -> str:
@@ -92,7 +96,7 @@ def plot_gpu_busy(stage: dict, report: dict, path: str):
         color=INK,
         fontsize=8,
     )
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path)
 
 
 def plot_breakdown(report: dict, path: str):
@@ -122,7 +126,7 @@ def plot_breakdown(report: dict, path: str):
     ax.set_xlim(0, 1.3 * max(values, default=0) or 1)
     ax.set_xlabel("cost (USD)", color=INK, fontsize=9)
     ax.grid(axis="y", visible=False)
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path)
 
 
 def plot_sessions(report: dict, path: str):
@@ -137,12 +141,12 @@ def plot_sessions(report: dict, path: str):
     gap_pct = [100 * x["gap_s"] / x["open_s"] if x["open_s"] else 0.0 for x in per_session]
     plot_cdf(gaps, gap_pct, OTHER_COLOR, "share of the session's open time in gaps (%)", "sessions (%)")
     gaps.set_xlim(0, 100)
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path)
 
 
 def plot_stage_cost(stage: dict, report: dict, stage_dir: str):
-    """Write the stage's cost plots: cost-breakdown.png, cost-gpu-busy.png and, for agent traces, cost-sessions.png."""
-    plot_breakdown(report, os.path.join(stage_dir, "cost-breakdown.png"))
-    plot_gpu_busy(stage, report, os.path.join(stage_dir, "cost-gpu-busy.png"))
+    """Write the stage's cost plots: cost-breakdown.pdf, cost-gpu-busy.pdf and, for agent traces, cost-sessions.pdf."""
+    plot_breakdown(report, os.path.join(stage_dir, "cost-breakdown.pdf"))
+    plot_gpu_busy(stage, report, os.path.join(stage_dir, "cost-gpu-busy.pdf"))
     if report["sessions"]:
-        plot_sessions(report, os.path.join(stage_dir, "cost-sessions.png"))
+        plot_sessions(report, os.path.join(stage_dir, "cost-sessions.pdf"))

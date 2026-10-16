@@ -170,7 +170,14 @@ class OpalSimulator:
         log_path = os.path.join(self.sim.output_dir, "simulation.log") if self.sim.output_dir else None
         log_file = open(log_path, "a") if log_path else None
         try:
-            report_run_cost(stages, self.config, self.config["cost"], output_dir=output_dir, log_file=log_file)
+            report_run_cost(
+                stages,
+                self.config,
+                self.config["cost"],
+                output_dir=output_dir,
+                log_file=log_file,
+                plot_graphs=self.plot_graphs,
+            )
         finally:
             if log_file is not None:
                 log_file.close()
