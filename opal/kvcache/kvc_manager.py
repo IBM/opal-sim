@@ -424,9 +424,29 @@ class OpalTokenDatabase(metaclass=abc.ABCMeta):
         else:
             raise ValueError("Either tokens or hashes must be provided.")
 
-        # name = inspect.currentframe().f_back.f_code.co_name
-        # #traceback.print_stack()
-        # print(name, get_hash_cache_stats(), self._count_process_tokens)
+    def process_tokens_from(
+        self,
+        tokens: List[int],
+        start_idx: int,
+        prefix_hash: Optional[int] = None,
+        end_idx: Optional[int] = None,
+        make_key: bool = False,
+        ) -> Iterable[ProcessTokensResult]:
+        assert start_idx % self.chunk_size == 0, f"start_idx {start_idx} not chunk-aligned"
+        if end_idx is None:
+            end_idx = len(tokens)
+        if prefix_hash is None:
+            prefix_hash = self._get_init_hash()
+        chunk_id = start_idx // self.chunk_size
+        for token_chunk in self._chunk_tokens(tokens[start_idx:end_idx]):
+            prefix_hash = self._hash_tokens(token_chunk, prefix_hash)
+            s = chunk_id * self.chunk_size
+            e = min(s + self.chunk_size, end_idx)
+            if make_key:
+                yield s, e, self._make_key_by_hash(prefix_hash)
+            else:
+                yield s, e, prefix_hash
+            chunk_id += 1
 
     def _make_key_by_hash(self, chunk_hash: int):
         return OpalCacheEngineKey(
@@ -951,10 +971,10 @@ class OpalKVCacheEngine:
             multiple of the chunk size.
         """
         """
-        This is a coaleasing of the following code: 
-         - retrieve() 
-          - _process_tokens_internal() in the CacheEngine.py 
-          - 
+        This is a coaleasing of the following code:
+         - retrieve()
+          - _process_tokens_internal() in the CacheEngine.py
+          -
         """
         if not (max_fetch is None):
             # curtain the fetching to the max_fetch
