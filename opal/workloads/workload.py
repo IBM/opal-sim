@@ -584,7 +584,7 @@ class Otel(AbstractWorkload):
                     inter_turn_log = f"delta_from_session_base={(wall_start_dt - session_base_time).total_seconds():.6f}s"
                 else:
                     inter_turn_log = f"inter_turn_gap={(wall_start_dt - prev_wall_end_dt).total_seconds():.6f}s"
-                self.log.info(
+                self.log.debug(
                     f"[TRACE REPLAY] [Session {trace_id}, Span {span_idx + 1}/{len(spans)}] submitted"
                     f" | req_id={request.id} span_id={span_id} parent_span_id={parent_span_id}"
                     f" | wall_start={wall_start} wall_end={wall_end}"

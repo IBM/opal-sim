@@ -153,7 +153,11 @@ class OpalConfig:
             # this happens, then this must be moonshot type workload
             workload = stage["type"].lower()
             # FIXME: put this as the workload parameter that each workload defines for itself
-            if not (workload == "trace".casefold() or workload == "SC25Workload".casefold()):
+            if not (
+                workload == "trace".casefold()
+                or workload == "otel".casefold()
+                or workload == "SC25Workload".casefold()
+            ):
                 str = (
                     f"total_request = -1 and simulation_time = -1, are invalid combination for this {workload} workload"
                 )
