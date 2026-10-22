@@ -182,7 +182,7 @@ class TestStageUsage:
         assert usage["busy_pct"] == 0.0
 
 
-class TestGpuHourRental:
+class TestInstanceRental:
     def test_cheapest_instance_type_split_into_busy_and_idle(self, profile_file):
         # r1: 3 x small.2gpu = $60 beats 1 x big.8gpu = $80; tiny.1gpu can't hold a tp 2 worker.
         # The $60 of the workers' GPUs is 75% busy: $45 busy, $15 idle; every rented GPU holds a worker.
@@ -247,9 +247,9 @@ class TestGpuHourRental:
         }
 
     def test_policy_and_pricing_names_are_case_insensitive(self, profile_file):
-        report = price(profile_file, policy="GPU_Hour_Rental", pricing="Spot")
+        report = price(profile_file, policy="Instance_Rental", pricing="Spot")
 
-        assert report["policy"] == "gpu_hour_rental"
+        assert report["policy"] == "instance_rental"
         assert report["pricing"]["pricing_model"] == "spot"
 
     def test_zero_length_stage_ranked_by_cost_per_hour(self, profile_file):

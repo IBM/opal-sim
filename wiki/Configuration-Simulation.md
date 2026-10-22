@@ -196,7 +196,7 @@ Optional. When present, the run is priced at the end and each stage gets `stage_
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `profile` | string | required | Price profile JSON in USD, e.g. `cost-profiles/cloud/aws-<date>.json`. A relative path is resolved from the working directory. |
-| `policy` | string | `gpu_hour_rental` | Cost policy, case-insensitive. |
+| `policy` | string | `instance_rental` | Cost policy, case-insensitive. |
 | `region` | string | cheapest region | Region to price in. If omitted, the cheapest region with a price for `worker.hw.gpu`. |
 | `pricing` | string | `on_demand` | `on_demand` or `spot`, case-insensitive. |
 | `instance_type` | string | cheapest instance | Restrict to one instance type, e.g. `p5.48xlarge`. |

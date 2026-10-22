@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> list[dict]:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("run_dir", type=Path, help="run folder holding sim_config.json and stage_N/opal_stats.json")
     parser.add_argument("--profile", help="price profile JSON, e.g. cost-profiles/cloud/aws-<date>.json")
-    parser.add_argument("--policy", help="cost policy, e.g. gpu_hour_rental")
+    parser.add_argument("--policy", help="cost policy, e.g. instance_rental")
     parser.add_argument("--region", help="region to price in (default: the cheapest one)")
     parser.add_argument("--pricing", help="on_demand or spot")
     parser.add_argument("--instance-type", dest="instance_type", help="restrict to one instance type")

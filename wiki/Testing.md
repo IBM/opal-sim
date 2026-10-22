@@ -69,7 +69,7 @@ Unit tests use a small hand-made price profile, so every expected number can be 
 
 - **`TestGpuInstances`** — instance types and regions offering a GPU, spot prices, the `instance_type` filter, errors.
 - **`TestStageUsage`** — provisioned and busy GPU-hours, token totals, autoscaling samples, stages with no samples or that never ran.
-- **`TestGpuHourRental`** — whole instances billed, cheapest instance per region, `gpu_busy` / `gpu_idle` / `gpu_unused`, `by_region` ranking, ties, case-insensitive names.
+- **`TestInstanceRental`** — whole instances billed, cheapest instance per region, `gpu_busy` / `gpu_idle` / `gpu_unused`, `by_region` ranking, ties, case-insensitive names.
 - **`TestBilling`** — `billing_increment_s` / `billing_minimum_s`: exact by default, rounding per instance, instances the router adds late, invalid values.
 - **`TestTokenPrices`** — the price per 1M tokens of each kind adds back up to the bill; no prices without tokens.
 - **`TestPriceRunErrors`** — missing profile, unknown policy, region without a price, worker larger than any instance, profile not in USD.

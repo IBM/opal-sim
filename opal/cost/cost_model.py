@@ -89,7 +89,7 @@ def billing_rounding_hours(usage: dict, workers_per_instance: int, increment_s: 
     return extra / 3600
 
 
-def gpu_hour_rental(usage: dict, profile: dict, cost_config) -> dict:
+def instance_rental(usage: dict, profile: dict, cost_config) -> dict:
     """Instance-hours x instance price: the GPU line of CachedAttention's bill (USENIX ATC'24).
 
     Whole instances are billed. The workers' GPUs are split into `gpu_busy` (running a batch) and `gpu_idle` (worker
@@ -158,7 +158,7 @@ def gpu_hour_rental(usage: dict, profile: dict, cost_config) -> dict:
     }
 
 
-POLICIES = {"gpu_hour_rental": gpu_hour_rental}
+POLICIES = {"instance_rental": instance_rental}
 
 # Weight of one token of each kind relative to an output token: splits the bill into a price per 1M tokens of each
 # kind, and gpu_busy between sessions. Defaults from published serving measurements and list prices
@@ -251,7 +251,7 @@ def price_run(stages: list[dict], config, cost_config) -> list[dict]:
     """Price every stage. `stages`: StageStatistics.to_dict() per stage; `config`: the simulation config."""
     if not cost_config.get("profile"):
         raise ValueError("The 'cost' config section needs a 'profile' (e.g. cost-profiles/cloud/aws-<date>.json)")
-    policy = str(cost_config.get("policy", "gpu_hour_rental")).casefold()
+    policy = str(cost_config.get("policy", "instance_rental")).casefold()
     if policy not in POLICIES:
         raise ValueError(f"Unknown cost policy '{policy}'. Available: {sorted(POLICIES)}")
     with open(cost_config["profile"]) as f:

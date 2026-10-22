@@ -147,7 +147,7 @@ opal-sim/
 │   │   └── inference_engine.py    # build_inference_engine(): picks legacy vs. new engine
 │   │
 │   ├── cost/                      # Cost layer (opt-in "cost" config section)
-│   │   ├── cost_model.py          # stage_usage, gpu_instances, POLICIES (gpu_hour_rental),
+│   │   ├── cost_model.py          # stage_usage, gpu_instances, POLICIES (instance_rental),
 │   │   │                          # price_run / report_run_cost -> stage_N/opal_cost.json
 │   │   ├── plots.py               # cost-*.pdf with -g (breakdown, GPU busy CDF, sessions)
 │   │   └── __main__.py            # python -m opal.cost <run_dir>: price a finished run
@@ -593,7 +593,7 @@ All in `opal/cost/cost_model.py`, as plain functions:
   `StageStatistics.to_dict()` (= `opal_stats.json`) and `worker.hw`; no prices
 - **Price profile** (`gpu_instances`) - dated JSON under `cost-profiles/`
 - **Policy** - one function per cost method, registered in `POLICIES`:
-  `gpu_hour_rental` (whole instance-hours x instance price)
+  `instance_rental` (whole instance-hours x instance price)
 - **Report** (`price_run`, `report_run_cost`) - `stage_N/opal_cost.json` + console
   summary + `cost-*.pdf` plots with `-g` (`plots.py`);
   `python -m opal.cost <run_dir>` prices a finished run offline

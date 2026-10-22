@@ -21,7 +21,7 @@ Plain functions in `opal/cost/cost_model.py` (plots in `opal/cost/plots.py`); `p
 
 - **Usage** (`stage_usage()`) reads the stage statistics (`StageStatistics.to_dict()`, the same content as `opal_stats.json`) and the `worker.hw` config; no prices.
 - **Profile** (`gpu_instances()`) is a dated data file of instance prices; a new provider, region or date is a new file.
-- **Policy** is one way of computing cost: a function registered by name in `POLICIES`, e.g. `gpu_hour_rental()`.
+- **Policy** is one way of computing cost: a function registered by name in `POLICIES`, e.g. `instance_rental()`.
 - **Report** (`price_run()`, `report_run_cost()`) is what gets written, printed and plotted.
 
 The layer runs from `OpalSimulator.run()` right after `write_simulation_data()`.
@@ -33,7 +33,7 @@ Add a `cost` section to the simulation config, for example:
 ```json
 "cost": {
   "profile": "cost-profiles/cloud/aws-<date>.json",
-  "policy": "gpu_hour_rental",
+  "policy": "instance_rental",
   "region": "us-east-1",
   "pricing": "on_demand"
 }
@@ -119,7 +119,7 @@ It reads `sim_config.json` and every `stage_N/opal_stats.json`; command-line opt
 
 ## Policies
 
-### `gpu_hour_rental`
+### `instance_rental`
 
 Rented instance-hours times the instance price. Whole instances are billed, as a cloud does: a worker's `tp` GPUs (`worker.hw.tp`) must fit in one instance, and rented GPUs that hold no worker are billed as unused.
 
@@ -153,7 +153,7 @@ A cloud bills each instance in steps, with a minimum. With `billing_increment_s`
 
 ### Adding a policy
 
-1. Write a function `my_policy(usage, profile, cost_config)` in `opal/cost/cost_model.py`. `usage` is the dict from `stage_usage()`, `profile` the loaded price profile, `cost_config` the `cost` section. Return at least `{"breakdown_usd": {line: cost}}`; any other keys are copied into the report as-is. The console summary and the plots also read `pricing`, `billing` and `gpu_hours`, as returned by `gpu_hour_rental`.
+1. Write a function `my_policy(usage, profile, cost_config)` in `opal/cost/cost_model.py`. `usage` is the dict from `stage_usage()`, `profile` the loaded price profile, `cost_config` the `cost` section. Return at least `{"breakdown_usd": {line: cost}}`; any other keys are copied into the report as-is. The console summary and the plots also read `pricing`, `billing` and `gpu_hours`, as returned by `instance_rental`.
 2. Register it in `POLICIES` and select it with `cost.policy`.
 
 If a policy needs a quantity that `stage_usage()` doesn't return yet, add it there from the stage statistics.
