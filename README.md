@@ -27,6 +27,7 @@
 
 
 ## What's new 
+  * Oct 22 2026 - Opal now supports GPU APC with LRU eviction ([#25](https://github.com/IBM/opal-sim/pull/25)). See https://github.com/IBM/opal-sim/wiki/GPU-APC 
   * July 23 2026 - Opal now supports replaying Agentic Open-telemetry (Otel) traces. See https://github.com/IBM/opal-sim/wiki/OTel-Trace-Replay 
 
 ## Overview 
