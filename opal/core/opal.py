@@ -55,7 +55,7 @@ class OpalSimulator:
         self.parser = self._build_parser()
         if "cost" in self.config._config:
             # Price an empty stage, so a bad "cost" section fails now instead of after the run.
-            price_run([StageStatistics().to_dict()], self.config, self.config["cost"])
+            price_run([StageStatistics().to_dict()], self.config)
 
         output_dir = output_dir if output_dir is not None else DEFAULT_MODELLING_OUTPUT
         check_and_create_directory(output_dir, create_parents=True, fail_if_exists=True)
@@ -173,7 +173,6 @@ class OpalSimulator:
             report_run_cost(
                 stages,
                 self.config,
-                self.config["cost"],
                 output_dir=output_dir,
                 log_file=log_file,
                 plot_graphs=self.plot_graphs,

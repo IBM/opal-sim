@@ -125,20 +125,20 @@ Rented instance-hours times the instance price. Whole instances are billed, as a
 
 ```
 workers_per_instance = floor(gpus_per_instance / tp)
-instances            = mean over the stage of ceil(workers / workers_per_instance)
+mean_instances       = mean over the stage of ceil(workers / workers_per_instance)
 usd_per_gpu_hour     = instance_usd_per_hour / gpus_per_instance
 
 gpu_busy         = busy_gpu_hours                           # a batch is running
 gpu_idle         = provisioned_gpu_hours - busy_gpu_hours   # a worker is up, no batch
-gpu_unused       = max(0, instances * gpus_per_instance * hours - provisioned_gpu_hours)
+gpu_unused       = max(0, mean_instances * gpus_per_instance * hours - provisioned_gpu_hours)
 billing_rounding = rounding_instance_hours * gpus_per_instance   # 0 unless billing_* is set
 
 each line costs its GPU-hours * usd_per_gpu_hour, and they add up to
-total_usd = (instances * hours + rounding_instance_hours) * instance_usd_per_hour
+total_usd = (mean_instances * hours + rounding_instance_hours) * instance_usd_per_hour
 ```
 
 - **Workers and busy time** come from the router, sampled once per simulated second (see [[Router]]); `provisioned_gpu_hours = mean_workers * tp * hours`.
-- **Instance type**: the one that hosts the workers for the lowest cost per hour, in `region`, or in the cheapest region if `region` is unset.
+- **Instance type**: the one that hosts the workers for the lowest `total_usd`, in `region`, or in the cheapest region if `region` is unset.
 
 ### Billing granularity
 
@@ -153,10 +153,10 @@ A cloud bills each instance in steps, with a minimum. With `billing_increment_s`
 
 ### Adding a policy
 
-1. Write a function `my_policy(usage, profile, cost_config)` in `opal/cost/cost_model.py`. `usage` is the dict from `stage_usage()`, `profile` the loaded price profile, `cost_config` the `cost` section. Return at least `{"breakdown_usd": {line: cost}}`; any other keys are copied into the report as-is. The console summary and the plots also read `pricing`, `billing` and `gpu_hours`, as returned by `instance_rental`.
+1. Write a function `my_policy(usage, profile, cost_config)` in `opal/cost/cost_model.py`. `usage` is the dict from `stage_usage()`, `profile` the loaded price profile, `cost_config` the `cost` section as `parse_cost_config()` returns it (checked, defaults filled in). Return at least `{"breakdown_usd": {line: cost}}`; any other keys are copied into the report as-is. The console summary and the plots also read `pricing`, `billing` and `gpu_hours`, as returned by `instance_rental`.
 2. Register it in `POLICIES` and select it with `cost.policy`.
 
-If a policy needs a quantity that `stage_usage()` doesn't return yet, add it there from the stage statistics.
+If a policy needs a quantity that `stage_usage()` doesn't return yet, add it there from the stage statistics; if it needs a new `cost` key, read and check it in `parse_cost_config()`.
 
 ## Per-session cost
 

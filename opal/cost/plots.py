@@ -105,7 +105,7 @@ def plot_breakdown(report: dict, path: str):
     lines = [line for line, usd in report["breakdown_usd"].items() if usd]
     values = [report["breakdown_usd"][line] for line in lines]
     fig, (ax,) = new_figure(
-        f"stage_{report['stage']}: {usd(total)} on {p['instances']:g} x {p['instance_type']},"
+        f"stage_{report['stage']}: {usd(total)} on {p['mean_instances']:g} x {p['instance_type']},"
         f" {p['region']}, {p['pricing_model']}",
         size=(7.0, 2.8),
     )
@@ -138,7 +138,7 @@ def plot_sessions(report: dict, path: str):
         cols=2,
     )
     plot_cdf(cost, [x["cost_usd"] for x in per_session], OTHER_COLOR, "cost of a session (USD)", "sessions (%)")
-    gap_pct = [100 * x["gap_s"] / x["open_s"] if x["open_s"] else 0.0 for x in per_session]
+    gap_pct = [100 * x["gap_s"] / x["open_s"] for x in per_session]
     plot_cdf(gaps, gap_pct, OTHER_COLOR, "share of the session's open time in gaps (%)", "sessions (%)")
     gaps.set_xlim(0, 100)
     save_figure(fig, path)

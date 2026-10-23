@@ -38,12 +38,12 @@ def main(argv: list[str] | None = None) -> list[dict]:
     if not stats_files:
         parser.error(f"no stage_N/opal_stats.json under {args.run_dir}")
     stages = [json.loads(p.read_text()) for p in stats_files]
-    cost_config = dict(config.get("cost", {}))
+    cost_config = config.setdefault("cost", {})
     for option in OPTIONS:
         if getattr(args, option) is not None:
             cost_config[option] = getattr(args, option)
     output_dir = None if args.no_write else str(args.run_dir)
-    return report_run_cost(stages, config, cost_config, output_dir=output_dir, plot_graphs=args.graphs)
+    return report_run_cost(stages, config, output_dir=output_dir, plot_graphs=args.graphs)
 
 
 if __name__ == "__main__":
