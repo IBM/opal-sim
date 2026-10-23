@@ -146,6 +146,12 @@ opal-sim/
 │   │   ├── inference_model_factory.py   # ModelFactory: config.json -> concrete subclass
 │   │   └── inference_engine.py    # build_inference_engine(): picks legacy vs. new engine
 │   │
+│   ├── cost/                      # Cost layer (opt-in "cost" config section)
+│   │   ├── cost_model.py          # stage_usage, gpu_instances, POLICIES (instance_rental),
+│   │   │                          # price_run / report_run_cost -> stage_N/opal_cost.json
+│   │   ├── plots.py               # cost-*.pdf with -g (breakdown, GPU busy CDF, sessions)
+│   │   └── __main__.py            # python -m opal.cost <run_dir>: price a finished run
+│   │
 │   ├── workloads/                 # Workload generators
 │   │   ├── abstract_workload.py   # AbstractWorkload base class
 │   │   ├── workload.py            # UniformReqRate, ExponentialReqRate, Trace
@@ -185,6 +191,7 @@ opal-sim/
 │
 ├── tests/                         # Unit tests
 │   ├── test_configs.py            # Parametrized config loading + run tests
+│   ├── test_cost_model.py         # Cost layer: prices, usage, policy, end-to-end
 │   ├── test_hf_model_configs.py   # OpalModel param/MoE/KV-cache vs. real HF configs (network)
 │   ├── test_device.py             # I/O device model tests
 │   ├── test_rag_workload.py       # RAG workload tests
@@ -203,6 +210,7 @@ opal-sim/
 │   ├── OTel-Trace-Replay.md
 │   ├── LLM-Model-Roofline-Analysis.md  # opal.llm_inference: model param/FLOPs/KV-cache math
 │   ├── LLM-Inference-Roofline-Migration-Plan.md  # opal.llm_inference: migration rationale
+│   ├── Cost-Model.md              # opal.cost: config, report, policies, price profiles
 │   ├── Running.md
 │   ├── Running-Workloads.md
 │   ├── Install-Requirements.md
@@ -574,6 +582,28 @@ See `wiki/LLM-Model-Roofline-Analysis.md` for the full conceptual writeup of
 each architecture family's math, and
 `wiki/LLM-Inference-Roofline-Migration-Plan.md` for the migration rationale.
 
+### 6. Cost Model (opal/cost/)
+
+Opt-in: runs from `OpalSimulator.run()` after `write_simulation_data()` only when
+the config has a `cost` section.
+
+All in `opal/cost/cost_model.py`, as plain functions:
+
+- **Usage** (`stage_usage`) - what a stage provisioned and used, from
+  `StageStatistics.to_dict()` (= `opal_stats.json`) and `worker.hw`; no prices
+- **Price profile** (`gpu_instances`) - dated JSON under `cost-profiles/`
+- **Policy** - one function per cost method, registered in `POLICIES`:
+  `instance_rental` (whole instance-hours x instance price)
+- **Report** (`price_run`, `report_run_cost`) - `stage_N/opal_cost.json` + console
+  summary + `cost-*.pdf` plots with `-g` (`plots.py`);
+  `python -m opal.cost <run_dir>` prices a finished run offline
+- The cost is a lower bound (instances start/stop instantly, billed exactly);
+  `cost.billing_increment_s` / `billing_minimum_s` add a cloud's billing rounding
+- "GPU idle" (worker up, no batch) is not a "session gap" (session open, no request at
+  the LLM); keep the two terms apart
+
+See `wiki/Cost-Model.md` for the config keys, report fields and how to add a policy.
+
 ---
 
 ## Development Workflow
@@ -627,6 +657,7 @@ git config core.hooksPath .githooks
 ```
 tests/
 ├── test_configs.py            # Parametrized config loading + run tests
+├── test_cost_model.py         # Cost layer: prices, usage, policy, end-to-end
 ├── test_hf_model_configs.py   # OpalModel param/MoE/KV-cache vs. real HF configs
 ├── test_unsupported_models.py # UnsupportedModelError negative-path tests (llm_inference)
 ├── test_device.py             # I/O device model tests
@@ -965,6 +996,7 @@ profile_function(lambda: sim.run())
 - **Examples:** `wiki/Examples.md`
 - **LLM Model Roofline Analysis:** `wiki/LLM-Model-Roofline-Analysis.md`
 - **LLM Inference Roofline Migration Plan:** `wiki/LLM-Inference-Roofline-Migration-Plan.md`
+- **Cost Model:** `wiki/Cost-Model.md`
 
 ### External References
 - **Wiki (online):** https://github.com/IBM/opal-sim/wiki
@@ -993,6 +1025,7 @@ LLM inference:         opal/llm_inference/ (opal_model.py, config_loader.py,
                        roofline_inference_model.py, legacy_gpu_model.py,
                        inference_model_factory.py, inference_engine.py)
 Config system:         opal/config/opal_config.py
+Cost model:            opal/cost/cost_model.py (+ plots.py, __main__.py)
 Utilities:             opal/utils/util.py
 Default config:        configs/defaults.json
 Model configs:         model-configs/
@@ -1015,6 +1048,7 @@ OpalModel                  - Config-derived model representation (opal.llm_infer
 LLMRooflineModel           - New config-dimension-driven timing engine + 4 subclasses
 GPUModel                   - Legacy inference timing (roofline/synthetic), still default
 OpalConfig / ConfigProxy   - Config loading and nested access
+cost_model.POLICIES        - Cost layer: pluggable cost methods, as functions (opal/cost/cost_model.py)
 LLMRequest                 - Request data structure
 LLMRequestStats            - Per-request statistics
 AbstractWorkload           - Workload base class

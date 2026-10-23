@@ -70,13 +70,15 @@ The `Router` (`opal/router/router.py`) drives most of the bookkeeping:
 | `raw_gpu_time` | `stats.get_gpu_time()` |
 | `raw_decode_values` | `stats.get_decode_times_including_ttft()` (list of lists, one per request) |
 | `input_output_tokens_sz` | `(request.input_length, request.output_length)` tuples |
+| `raw_session_ids` | `request.session_id`: the agent session a request belongs to. Only the OTel trace replay sets it; other workloads record `None`. Used by the cost layer's per-session split ([[Cost Model]]). |
+| `arrival_completion_times` | `(stats.get_router_arrival_time(), stats.get_completion_time())` tuples: when the request reached the router and when it finished there. |
 | `kvc_tier_tokens` | accumulated (`defaultdict(int)`) from `stats.get_kvc_tier_tokens()`, tier name -> running token total across all requests in the stage |
 
 `failed_requests` exists as a counter field but is not incremented anywhere in the router/worker code as of this writing; `print_summary_results()` falls back to `max(failed_requests, queued_requests - finished_requests)` so a non-zero "Failed requests" figure can still show up in the summary even though nothing sets the field directly.
 
 ### Per-second series (populated from Layer 3)
 
-Three parallel lists are appended to once per simulated second (see next section): `per_unit_req_done`, `per_unit_workers`, `per_unit_gpu_utilization`, via `add_per_unit_workdone()`, `add_per_unit_workers()`, and `add_per_unit_gpu_utilization()` respectively.
+Four parallel lists are appended to once per simulated second (see next section): `per_unit_req_done`, `per_unit_workers`, `per_unit_gpu_utilization`, `per_unit_gpu_busy_time`, via `add_per_unit_workdone()`, `add_per_unit_workers()`, `add_per_unit_gpu_utilization()`, and `add_per_unit_gpu_busy_time()` respectively.
 
 ### Computing summary metrics
 
@@ -88,15 +90,16 @@ Three parallel lists are appended to once per simulated second (see next section
 
 ### Persistence: `to_dict()` / `from_dict()` / JSON round-trip
 
-`to_dict()` serializes every field above (numpy arrays converted via `.tolist()`) into a plain dict; `from_dict()` reconstructs a `StageStatistics` from that dict (calling `__init__` first so `bins`/`latencies` get their default shape, then overwriting). `raw_kvc_hit_tokens` is read with `.get(..., [])` so old JSON files without that field still load. `write_to_json(path)` writes the dict out using a custom compact formatter (`dump_json_compact_lists` — one key per line, but lists/arrays kept on a single line for readability) rather than plain `json.dump`.
+`to_dict()` serializes every field above (numpy arrays converted via `.tolist()`) into a plain dict; `from_dict()` reconstructs a `StageStatistics` from that dict (calling `__init__` first so `bins`/`latencies` get their default shape, then overwriting). `raw_kvc_hit_tokens`, `per_unit_gpu_busy_time`, `raw_session_ids` and `arrival_completion_times` are read with `.get(..., [])` so old JSON files without those fields still load. `write_to_json(path)` writes the dict out using a custom compact formatter (`dump_json_compact_lists` — one key per line, but lists/arrays kept on a single line for readability) rather than plain `json.dump`.
 
 ## Layer 3: per-second sampling (Router)
 
-The `Router` runs a dedicated SimPy process, `_per_second_stats()` (see [[Router]] for the full list of router processes), that wakes up once every simulated second for as long as the simulation is running and pushes three samples into the *currently active* stage's `StageStatistics`:
+The `Router` runs a dedicated SimPy process, `_per_second_stats()` (see [[Router]] for the full list of router processes), that wakes up once every simulated second for as long as the simulation is running and pushes four samples into the *currently active* stage's `StageStatistics`:
 
 - `stats.add_per_unit_workdone(self.cumulative_finished - last)` — requests completed since the previous tick (this feeds `thrp-request-sec.pdf`).
 - `stats.add_per_unit_workers(len(self._active_workers))` — how many workers are active right now (feeds `thrp-workers-sec.pdf`; flat if auto-scaling is disabled).
 - `stats.add_per_unit_gpu_utilization(utilization)`, where `utilization = mean(w.gpu_busy_time for w in active_workers) * 100 / now` — average, since simulation start, of the fraction of time each active worker's GPU has been busy (feeds `gpu-utilization-per-sec.pdf`).
+- `stats.add_per_unit_gpu_busy_time(busy - last_busy)`, where `busy = sum(w.gpu_busy_time for w in active_workers)` — GPU-busy seconds that all workers added since the previous tick. Unlike the utilization above, which is cumulative since simulation start (so a later stage's reading still includes the earlier stages), its sum over a stage is that stage's busy worker-seconds, also when workers are added during the stage. Used by the cost layer ([[Cost Model]]).
 
 `sample_workdone_per_K(k)` (on `StageStatistics`, delegating to `opal.utils.util.sample_series_K`) can downsample any of these per-second series by averaging every `k` consecutive samples — used by the plotting code's `per_K` parameter to reduce noise on long runs.
 
@@ -107,6 +110,7 @@ At the end of a run, `OpalSimulator._process_per_stage()` (`opal/core/opal.py`) 
 1. Prints a `===== stage_N =====` header and calls `StageStatistics.print_summary_results(log_file=...)`, writing the vLLM-style benchmark block both to stdout and to `simulation.log` (this is the mechanism behind "Write stage summary statistics to simulation.log").
 2. If `-g`/`--graphs` was passed, calls `simend_plot(stats, config, stage_dir)` (`opal/stats/plot.py`), which produces the CDF, throughput, worker-count, GPU-utilization, and histogram PDFs for that stage.
 3. Separately, `OpalSimulatorEnvironment.write_simulation_data()` (`opal/core/environment.py`) — invoked from `OpalSimulator.run()` when `simulation.save_simulation_data` is `true` (see [[Configuration Simulation]]) — writes each stage's full `StageStatistics.to_dict()` to `stage_N/opal_stats.json`.
+4. After these, if the config has a `cost` section, `OpalSimulator.run()` calls `_report_cost()`, which prices every stage from `StageStatistics.to_dict()` and prints the cost summary (see [[Cost Model]]).
 
 The exact set of per-stage files (`cdf-latencies.pdf`, `gpu-utilization-per-sec.pdf`, `histo-latencies.pdf`, `thrp-request-sec.pdf`, `thrp-workers-sec.pdf`, `opal_stats.json`) and top-level files (`sim_config.json`, `simulation.log`) is documented in the README's "What are simulation outputs" and "Logging" sections — refer there for the canonical list; this page only explains how each file's content is produced.
 

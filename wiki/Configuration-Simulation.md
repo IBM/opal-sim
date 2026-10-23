@@ -188,3 +188,18 @@ Each tier is configured as a separate object keyed by its name:
 | `latency_nsec` | float | `100000` | Network + access latency in nanoseconds. |
 | `concurrency` | int | `1000` | Maximum concurrent I/O operations. |
 | `capacity_GB` | float | `1048576` | Total capacity in GB (effectively unlimited). |
+
+## cost
+
+Optional. When present, the run is priced at the end and each stage gets `stage_N/opal_cost.json` (and cost plots with `-g`); when absent, nothing changes. Full description in [[Cost Model]].
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `profile` | string | required | Price profile JSON in USD, e.g. `cost-profiles/cloud/aws-<date>.json`. A relative path is resolved from the working directory. |
+| `policy` | string | `instance_rental` | Cost policy, case-insensitive. |
+| `region` | string | cheapest region | Region to price in. If omitted, the cheapest region with a price for `worker.hw.gpu`. |
+| `pricing` | string | `on_demand` | `on_demand` or `spot`, case-insensitive. |
+| `instance_type` | string | cheapest instance | Restrict to one instance type, e.g. `p5.48xlarge`. |
+| `billing_increment_s` | number | `0` | Billing step per instance in seconds (`1`, `60`, `3600`); `0` bills exactly, the lower bound. |
+| `billing_minimum_s` | number | `0` | Minimum billed time per instance, in seconds (e.g. `60` on AWS and GCP). |
+| `token_weights` | object | `{"output": 1, "recomputed_input": 0.3, "cached_input": 0.01}` | Weights of a token of each kind, relative to an output token: the price per 1M tokens of each kind and the per-session split of `gpu_busy`; see [[Cost Model]]. |

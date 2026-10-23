@@ -24,7 +24,7 @@ Workload Generator
 The router runs several concurrent SimPy processes:
 - **`_accept_requests`** — pulls requests from the input queue, applies the routing policy, and dispatches to a worker.
 - **`_collect_completion`** — gathers finished requests from the shared results queue and records statistics.
-- **`_per_second_stats`** — samples per-second throughput and GPU utilization.
+- **`_per_second_stats`** — samples per-second throughput, GPU utilization and GPU-busy seconds.
 - **`process_events`** — batches and processes infrastructure events (KVC updates, system events) used by prefix-aware policies.
 - **`_per_second_scaling`** (optional) — auto-scales workers when queue depth exceeds a threshold.
 
